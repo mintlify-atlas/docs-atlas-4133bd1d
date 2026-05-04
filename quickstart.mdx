@@ -1,81 +1,157 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
-icon: 'rocket'
+title: "Alice quickstart: write and load your first plugin"
+description: "Create and load your first Alice plugin in minutes. This guide walks through writing manifest.json, extending PluginBase, and enabling your plugin."
 ---
 
-## Get started in three steps
+This guide takes you from a fresh clone of Alice to a running plugin that registers a UI tab and listens to core events. You'll write two files — `manifest.json` and `plugin.py` — and see them loaded by the Alice runtime on startup.
 
-Get your documentation site running locally and make your first customization.
+<Steps>
+  <Step title="Set up your environment">
+    Clone the Alice repository and install its dependencies:
 
-### Step 1: Set up your local environment
+    ```bash
+    git clone https://github.com/runesc/Alice
+    cd Alice
+    python -m venv .venv
+    source .venv/bin/activate      # Windows: .venv\Scripts\activate
+    pip install -r requirements/base.txt
+    ```
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    For platform-specific packages, install the file that matches your OS:
 
-### Step 2: Deploy your changes
+    ```bash
+    # Linux
+    pip install -r requirements/linux.txt
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    # macOS
+    pip install -r requirements/mac.txt
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    # Windows
+    pip install -r requirements/windows.txt
+    ```
+  </Step>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+  <Step title="Create your plugin directory">
+    Alice discovers plugins by scanning for subdirectories inside `plugins/`. Each plugin lives in its own folder named after its reverse-domain ID.
 
-### Step 3: Go live
+    ```
+    plugins/
+    └── com.example.hello/
+        ├── manifest.json
+        └── plugin.py
+    ```
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    Create the directory:
+
+    ```bash
+    mkdir -p plugins/com.example.hello
+    ```
+
+    <Note>
+      The `plugins/` directory sits at the root of the Alice repository, next to `src/`. Alice creates it automatically on first run if it does not exist.
+    </Note>
+  </Step>
+
+  <Step title="Write manifest.json">
+    The manifest is the contract between your plugin and the Alice runtime. Every field is validated before any plugin code runs. Create `plugins/com.example.hello/manifest.json`:
+
+    ```json
+    {
+      "schema_version": "1",
+      "id": "com.example.hello",
+      "name": "Hello Plugin",
+      "version": "1.0.0",
+      "entrypoint": "plugin:HelloPlugin",
+      "permissions": [
+        "ui.tab",
+        "storage.read",
+        "storage.write",
+        "events.subscribe",
+        "events.emit"
+      ],
+      "api_compatibility": {
+        "min": "1.0.0",
+        "max": "1.x"
+      },
+      "dependencies": {
+        "python": [],
+        "plugins": []
+      }
+    }
+    ```
+
+    Key fields:
+
+    - **`id`** — must be a reverse-domain string matching the pattern `^[a-z0-9]+(\.[a-z0-9\-]+)+$`.
+    - **`entrypoint`** — format is `module:ClassName`. Alice imports `plugin.py` from your plugin directory and instantiates `HelloPlugin`.
+    - **`permissions`** — every `self.context.*` API call is checked against this list. Undeclared permissions raise a `PermissionError` at runtime.
+    - **`api_compatibility`** — Alice checks this range against its own API version before loading.
+  </Step>
+
+  <Step title="Write the plugin class">
+    Create `plugins/com.example.hello/plugin.py`. Your class extends `PluginBase` and implements lifecycle hooks:
+
+    ```python
+    from core.skills.base import PluginBase
+
+
+    class HelloPlugin(PluginBase):
+
+        def on_load(self):
+            self.context.logger.info("Hello plugin loaded")
+
+        def on_enable(self):
+            from PySide6.QtWidgets import QLabel
+
+            self.context.ui.register_tab(
+                lambda: QLabel("Hello from my plugin!"),
+                title="Hello"
+            )
+            self.context.events.subscribe(
+                "core.plugin.enabled",
+                self._on_plugin_enabled
+            )
+
+        def _on_plugin_enabled(self, event: str, payload: dict):
+            self.context.logger.info(f"Another plugin enabled: {payload}")
+
+        def on_disable(self):
+            self.context.logger.info("Hello plugin disabled")
+
+        def get_main_widget(self):
+            from PySide6.QtWidgets import QLabel
+            return QLabel("Hello World!")
+    ```
+
+    Lifecycle summary:
+
+    - `on_load` — called every startup while the plugin is enabled. Avoid heavy I/O; it must finish in under 500 ms.
+    - `on_enable` — called when the user activates the plugin. Mount UI and subscribe to events here.
+    - `on_disable` — called when the user deactivates the plugin. Alice automatically unsubscribes all event listeners registered under your plugin ID, so you only need to explicitly clean up other resources.
+
+    <Tip>
+      Always use `self.context.logger` instead of `print()`. Log output goes to `debug.log` in the project root and is prefixed with your plugin ID, making it easy to filter.
+    </Tip>
+  </Step>
+
+  <Step title="Run Alice">
+    With your plugin directory in place, start Alice:
+
+    ```bash
+    python src/main/python/main.py
+    ```
+
+    On startup, `PluginManager` scans `plugins/`, validates your manifest, and calls `on_load`. Enable your plugin from the settings panel in the Alice UI to trigger `on_enable` and see the "Hello" tab appear.
+
+    Check `debug.log` in the project root for log output from your plugin.
+  </Step>
+</Steps>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
+Now that your first plugin is running, explore the rest of the plugin API:
 
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+- [Plugin manifest reference](/plugins/manifest) — every manifest field, validation rules, and the permissions catalogue.
+- [Lifecycle hooks](/plugins/lifecycle) — when each hook runs and what you should and shouldn't do in each one.
+- [PluginContext API](/plugins/plugin-context) — full reference for `ui`, `events`, `storage`, `services`, and `logger`.
+- [UI extensions](/plugins/ui-extensions) — register tabs, sidebars, toolbar actions, and dialogs.

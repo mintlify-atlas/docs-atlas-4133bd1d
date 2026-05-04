@@ -1,0 +1,115 @@
+---
+title: "Permissions reference: all Alice plugin capabilities"
+description: "Complete list of Alice permission strings, their required use cases, and which are flagged as dangerous and require explicit user approval at install time."
+---
+
+Alice's permission system controls what each plugin is allowed to do at runtime. Every plugin declares its required permissions in its `manifest.json`, and `PermissionGuard` enforces those declarations at every API call boundary. Plugins that attempt to use a capability they haven't declared will have the call rejected and the error logged — no silent failures.
+
+```python
+from core.skills.sandbox import Permission, PermissionGuard, DANGEROUS_PERMISSIONS
+```
+
+## Permission enum
+
+Each permission is a string constant on the `Permission` enum. Use the string form (e.g., `"ui.sidebar"`) in `manifest.json`, and the enum value (e.g., `Permission.UI_SIDEBAR`) in Python code.
+
+| Permission string | Enum value | Description |
+|---|---|---|
+| `ui.sidebar` | `Permission.UI_SIDEBAR` | Register dock sidebar widgets |
+| `ui.tab` | `Permission.UI_TAB` | Register central tab widgets |
+| `ui.toolbar` | `Permission.UI_TOOLBAR` | Add actions to the plugin toolbar |
+| `ui.dialog` | `Permission.UI_DIALOG` | Show modal dialogs |
+| `storage.read` | `Permission.STORAGE_READ` | Read from isolated plugin storage |
+| `storage.write` | `Permission.STORAGE_WRITE` | Write to isolated plugin storage |
+| `events.subscribe` | `Permission.EVENTS_SUBSCRIBE` | Subscribe to EventBus events |
+| `events.emit` | `Permission.EVENTS_EMIT` | Emit plugin-namespaced events |
+| `events.emit.global` | `Permission.EVENTS_EMIT_GLOBAL` | Emit to the global event namespace |
+| `network.http` | `Permission.NETWORK_HTTP` | Make HTTP network requests |
+| `network.ws` | `Permission.NETWORK_WS` | Use WebSocket connections |
+| `shell.exec` | `Permission.SHELL_EXEC` | Execute shell commands |
+| `fs.read` | `Permission.FS_READ` | Read files outside the app directory |
+| `fs.write` | `Permission.FS_WRITE` | Write files to the filesystem |
+
+## Dangerous permissions
+
+The following permissions are members of `DANGEROUS_PERMISSIONS` and require explicit user approval at install time, similar to Android's runtime permissions model:
+
+- `Permission.SHELL_EXEC`
+- `Permission.FS_WRITE`
+- `Permission.NETWORK_HTTP`
+- `Permission.NETWORK_WS`
+- `Permission.EVENTS_EMIT_GLOBAL`
+
+<Warning>
+Plugins that declare any dangerous permission will prompt the user for approval before installation completes. If the user declines, the plugin will not be loaded. Do not declare dangerous permissions unless they are strictly necessary for your plugin's core functionality.
+</Warning>
+
+<Warning>
+`shell.exec` (`Permission.SHELL_EXEC`) requires manual review before a plugin can be distributed through the Alice plugin registry. Plugins that use this permission outside of approved distributions are blocked by default.
+</Warning>
+
+## PermissionGuard class
+
+`PermissionGuard` is instantiated once by `PluginManager` and shared across all loaded plugins. You do not instantiate it yourself; it is injected into `PluginContext`.
+
+<AccordionGroup>
+  <Accordion title="register_plugin(plugin_id, permissions)">
+    Called by `PluginManager` during plugin load. Records the set of permission strings the plugin declared in its manifest.
+
+    <ParamField path="plugin_id" type="string" required>
+      The unique identifier for the plugin, as declared in its manifest.
+    </ParamField>
+
+    <ParamField path="permissions" type="string[]" required>
+      List of permission strings the plugin declared. These are matched against `Permission` enum values.
+    </ParamField>
+
+    Returns `None`. Calling this a second time for the same `plugin_id` overwrites the previous permission set.
+  </Accordion>
+
+  <Accordion title="require(plugin_id, permission)">
+    Asserts that the plugin holds the given permission. Raises `PermissionError` if the permission was not declared in the plugin's manifest. Call this inside any API method that requires a specific capability before performing the action.
+
+    <ParamField path="plugin_id" type="string" required>
+      The plugin identifier to check.
+    </ParamField>
+
+    <ParamField path="permission" type="string" required>
+      The permission string to assert (e.g., `"network.http"`).
+    </ParamField>
+
+    Raises `PermissionError` if the permission is not granted. Logs the error before raising.
+  </Accordion>
+
+  <Accordion title="has(plugin_id, permission)">
+    Non-raising alternative to `require`. Returns `True` if the plugin holds the permission, `False` otherwise. Use this when you want to branch behavior rather than fail hard.
+
+    <ParamField path="plugin_id" type="string" required>
+      The plugin identifier to check.
+    </ParamField>
+
+    <ParamField path="permission" type="string" required>
+      The permission string to test.
+    </ParamField>
+
+    Returns `bool`.
+  </Accordion>
+
+  <Accordion title="get_dangerous_permissions(plugin_id)">
+    Returns the subset of the plugin's granted permissions that are members of `DANGEROUS_PERMISSIONS`. Useful for displaying a summary of elevated capabilities in the plugin details UI.
+
+    <ParamField path="plugin_id" type="string" required>
+      The plugin identifier to inspect.
+    </ParamField>
+
+    Returns `set[str]` — may be empty if the plugin holds no dangerous permissions.
+  </Accordion>
+</AccordionGroup>
+
+## Security model caveat
+
+<Warning>
+`PermissionGuard` is **not an OS-level sandbox**. It does not use `seccomp`, `AppArmor`, or any kernel isolation mechanism. The guard protects against plugins that *involuntarily* exceed their declared scope — for example, a dependency that makes an unexpected network call.
+
+A determined malicious plugin can bypass `PluginContext` entirely and import Python standard library modules directly (e.g., `import subprocess`), circumventing all permission checks. If you are running untrusted third-party plugins in a security-sensitive environment, the recommended architecture is to isolate each plugin in a subprocess and communicate over a controlled IPC channel rather than loading plugins in-process.
+</Warning>

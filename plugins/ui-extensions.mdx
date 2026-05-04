@@ -1,0 +1,109 @@
+---
+title: "Extend Alice's UI: sidebars, tabs, and toolbars"
+description: "Alice plugins can mount dock sidebars, central tabs, toolbar actions, and modal dialogs using UIContext methods. All slots are auto-cleaned on disable."
+---
+
+Alice's `UIBridge` manages the main window's extensible regions and mediates between plugins and the Qt widget tree. Plugins access it through `context.ui`, which enforces declared permissions before delegating to the bridge. Every component a plugin registers is tracked by slot ID — Alice removes all of a plugin's slots automatically when it is disabled, so plugins do not need to implement manual cleanup in `on_disable`.
+
+## Sidebars
+
+Requires the `ui.sidebar` permission.
+
+Sidebars appear as dockable `QDockWidget` panels anchored to the left side of the main window. Users can move, float, and close them independently.
+
+```python
+def on_enable(self):
+    from PySide6.QtWidgets import QWidget, QLabel, QVBoxLayout
+
+    def make_sidebar():
+        w = QWidget()
+        layout = QVBoxLayout()
+        layout.addWidget(QLabel("My Sidebar"))
+        w.setLayout(layout)
+        return w
+
+    self.context.ui.register_sidebar(
+        widget_factory=make_sidebar,
+        title="My Plugin",
+        icon=""
+    )
+```
+
+The `widget_factory` callable is invoked immediately when `register_sidebar` is called. The `title` is shown in the dock widget's title bar. `icon` is optional and currently reserved for future use.
+
+## Tabs
+
+Requires the `ui.tab` permission.
+
+Tabs appear in Alice's central `QTabWidget`. This is the main content area, suitable for full-featured plugin views.
+
+```python
+def on_enable(self):
+    self.context.ui.register_tab(
+        widget_factory=self.get_main_widget,
+        title="My Tab"
+    )
+```
+
+Pass a callable — not a widget instance — as `widget_factory`. Alice deduplicates tab registrations by slot ID, so calling `register_tab` multiple times with the same title is safe and idempotent.
+
+## Toolbar actions
+
+Requires the `ui.toolbar` permission.
+
+Toolbar actions appear in Alice's plugin toolbar as clickable `QAction` items.
+
+```python
+from PySide6.QtGui import QAction
+
+def on_enable(self):
+    def make_action():
+        action = QAction("Run")
+        action.triggered.connect(self._do_something)
+        return action
+
+    self.context.ui.register_toolbar_action(
+        action_factory=make_action,
+        tooltip="Run my plugin"
+    )
+```
+
+The `tooltip` string is both the slot identifier and the text shown on hover. Alice retrieves the main window's `plugin_toolbar` attribute at registration time — if the toolbar does not exist yet, the registration is silently skipped.
+
+## Dialogs
+
+Requires the `ui.dialog` permission.
+
+Use `show_dialog` to open a modal `QDialog` from anywhere in your plugin — for example, from a button callback or a menu action.
+
+```python
+def show_settings(self):
+    from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel
+
+    def make_dialog():
+        dlg = QDialog()
+        layout = QVBoxLayout()
+        layout.addWidget(QLabel("Settings"))
+        dlg.setLayout(layout)
+        return dlg
+
+    self.context.ui.show_dialog(make_dialog)
+```
+
+The factory callable is invoked by `UIContext.show_dialog`, which passes it through to the underlying bridge to construct and display the dialog.
+
+## Auto-cleanup
+
+When Alice disables a plugin — either because the user toggled it off, or because Alice is shutting down — `context.ui.unregister_all()` is called automatically. The `UIBridge` removes dock widgets, toolbar actions, and tabs from the Qt widget tree and frees their resources. You do not need to call any removal methods in `on_disable`.
+
+<Warning>
+  Always pass a factory function (a callable that returns a widget), not a widget instance, to `register_sidebar`, `register_tab`, `register_toolbar_action`, and `show_dialog`. The UIBridge calls the factory to construct the widget. Passing a pre-constructed widget instance will cause a `TypeError` at registration time.
+</Warning>
+
+<Note>
+  Plugins shown in Alice's PluginView panel must implement a `get_main_widget()` method that returns a `QWidget`. This method is called by PluginView as a factory — return a freshly constructed widget each time rather than caching and returning the same instance.
+</Note>
+
+<Tip>
+  If your plugin is enabled before Alice's main window has finished its initial render, `central_tabs` may not yet exist on the main window object. In that case, `register_tab` logs a warning and returns the slot ID without mounting the tab. If you observe a missing tab, check the log for `central_tabs aún no existe` and ensure your plugin is not being enabled during early startup before the window renders.
+</Tip>

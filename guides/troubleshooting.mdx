@@ -1,0 +1,200 @@
+---
+title: 'Troubleshoot common Alice plugin issues'
+description: 'Debug failed plugin loads, permission errors, UI not appearing, and event handling issues in Alice. Covers log locations and error state meanings.'
+---
+
+When something goes wrong with a plugin, the first place to look is the log file. Alice writes all debug output to `debug.log` in the working directory, using the format `%(asctime)s [%(name)s] %(levelname)s — %(message)s`. The file is overwritten each run (`filemode="w"`), so open it immediately after reproducing the issue.
+
+## Issues
+
+<AccordionGroup>
+  <Accordion title="Plugin not loading">
+    **Symptom:** The plugin's status in the registry is `ERROR` or `INCOMPATIBLE` rather than `LOADED` or `ENABLED`.
+
+    Check the following in order:
+
+    **Manifest is valid JSON and passes schema validation**
+
+    The manifest must include all required fields. A minimal valid manifest looks like this:
+
+    ```json
+    {
+      "schema_version": "1",
+      "id": "com.yourname.myplugin",
+      "name": "My Plugin",
+      "version": "1.0.0",
+      "entrypoint": "plugin:MyPlugin",
+      "api_compatibility": {
+        "min": "1.0.0",
+        "max": "1.x"
+      }
+    }
+    ```
+
+    Required fields: `schema_version`, `id`, `name`, `version`, `entrypoint`, `api_compatibility`.
+
+    **Plugin directory name matches the `id` field**
+
+    Alice uses the directory name to locate the manifest. If your directory is named `my-plugin` but your manifest has `"id": "com.yourname.myplugin"`, discovery will succeed but loading may fail. Keep them consistent.
+
+    **API version is compatible**
+
+    Alice's current API version is `1.0.0`. The `api_compatibility.min` and `api_compatibility.max` fields in your manifest must include `1.0.0`. If they do not, the plugin is set to `INCOMPATIBLE` status and skipped.
+
+    **Entrypoint format is `module:ClassName`**
+
+    The `entrypoint` value must use colon-separated `module:ClassName` syntax, for example `plugin:MyPlugin`. Alice imports the named module from the plugin directory and instantiates the named class.
+  </Accordion>
+
+  <Accordion title="PermissionError when using the context API">
+    **Symptom:** You see an error like:
+
+    ```
+    PermissionError: Plugin 'com.yourname.myplugin' requires permission 'ui.tab' not declared in its manifest.
+    ```
+
+    **Fix:** Add the missing permission string to the `permissions` array in `manifest.json`:
+
+    ```json
+    {
+      "permissions": [
+        "ui.tab",
+        "storage.read",
+        "storage.write"
+      ]
+    }
+    ```
+
+    The full list of available permissions is:
+
+    | Permission | Description |
+    |---|---|
+    | `ui.sidebar` | Register a sidebar panel |
+    | `ui.tab` | Register a central tab |
+    | `ui.toolbar` | Register a toolbar action |
+    | `ui.dialog` | Open modal dialogs |
+    | `storage.read` | Read from plugin key-value storage |
+    | `storage.write` | Write to plugin key-value storage |
+    | `events.subscribe` | Subscribe to EventBus events |
+    | `events.emit` | Emit events within the plugin's scope |
+    | `events.emit.global` | Emit global events visible to all plugins |
+    | `network.http` | Make HTTP requests |
+    | `network.ws` | Open WebSocket connections |
+    | `shell.exec` | Execute shell commands |
+    | `fs.read` | Read from the filesystem |
+    | `fs.write` | Write to the filesystem |
+  </Accordion>
+
+  <Accordion title="UI component not appearing (tab or sidebar missing)">
+    **Symptom:** `on_enable` runs without error, but your tab or sidebar panel never shows up in the main window.
+
+    Check the following:
+
+    **Permission is declared in the manifest**
+
+    You must declare `ui.tab` or `ui.sidebar` in your manifest's `permissions` array. Without it, the context API will raise a `PermissionError` silently swallowed by `plugin_guard`.
+
+    **Main window has finished rendering**
+
+    For tabs, `UIBridge` mounts the widget into `central_tabs` on the main window. If a plugin is enabled before `render_()` has run, `central_tabs` does not yet exist and the tab is silently skipped. This can happen during startup if your plugin is enabled very early in `component_will_mount`. If you suspect this, check whether delaying `enable_plugin` until after `render_()` resolves the problem.
+
+    **Factory function returns a valid QWidget**
+
+    The factory you pass to `context.ui.register_tab()` or `context.ui.register_sidebar()` must return a proper `QWidget` subclass instance. Returning `None` or a non-widget object will cause the component to be skipped without an error.
+  </Accordion>
+
+  <Accordion title="Plugin loads but on_load is too slow">
+    **Symptom:** The Alice window freezes at startup, or log timestamps show a long gap between plugin load events.
+
+    `on_load` runs synchronously on the main thread during startup. It must complete in under 500 ms. Common causes of slow `on_load` methods:
+
+    - Reading large files or databases
+    - Making network requests
+    - Running heavy computation
+
+    **Fix:** Move anything time-consuming to `on_enable`, or better, kick it off in a background thread with `QThread` or `threading.Thread` and let the UI remain responsive while it completes.
+
+    ```python
+    def on_load(self):
+        # Fast: only set up lightweight state
+        self._data = None
+
+    def on_enable(self):
+        # Start slow I/O in the background
+        import threading
+        threading.Thread(target=self._load_data, daemon=True).start()
+    ```
+  </Accordion>
+
+  <Accordion title="Dependency installation fails">
+    **Symptom:** Plugin status is `ERROR` and `debug.log` contains a message like `No se pudo resolver dependencias`.
+
+    Check the following:
+
+    **Package name and version spec are correct**
+
+    Alice installs Python dependencies listed under `dependencies.python` in your manifest using pip. Each entry must be an object with a `package` field and an optional `version` field:
+
+    ```json
+    {
+      "dependencies": {
+        "python": [
+          { "package": "requests", "version": ">=2.28.0" },
+          { "package": "httpx", "version": "==0.24.1" }
+        ]
+      }
+    }
+    ```
+
+    Verify the package name matches PyPI exactly and the version constraint is valid.
+
+    **Network access is available**
+
+    pip needs to reach PyPI to download packages. If Alice runs in a restricted network environment, pip will fail.
+
+    **Bundle wheels for offline use**
+
+    For air-gapped or offline environments, place pre-downloaded `.whl` files in `plugins/wheels/`. Alice will use the local wheel files as a fallback instead of fetching from PyPI.
+  </Accordion>
+
+  <Accordion title="Events not received">
+    **Symptom:** An event handler registered in `on_enable` is never called, even when the event is emitted.
+
+    Check the following:
+
+    **`events.subscribe` permission is declared**
+
+    Without this permission, the context API will not register your subscription.
+
+    **Event name matches exactly**
+
+    Event names are case-sensitive strings. `"core.plugin.enabled"` and `"Core.Plugin.Enabled"` are different events. Verify that the emitter and subscriber use the same string.
+
+    **Plugin is in `ENABLED` state**
+
+    Subscriptions registered in `on_enable` are removed by `context.events.unsubscribe_all()` when the plugin is disabled. If the plugin is in `LOADED` or `DISABLED` state, no handlers are active.
+
+    **Global events require the emit permission on the sender**
+
+    To receive a global event, `events.subscribe` is sufficient. However, for the event to arrive in the first place, the emitting plugin must have `events.emit.global` declared in its manifest. If the emitter is missing that permission, the event is not broadcast globally and no subscribers receive it.
+  </Accordion>
+
+  <Accordion title="Plugin crashes on enable but Alice continues running">
+    This is expected behavior. Alice wraps every lifecycle call in the `plugin_guard` context manager:
+
+    ```python
+    with plugin_guard(plugin_id, "on_enable"):
+        plugin.on_enable()
+    ```
+
+    Any unhandled exception inside `on_enable` (or `on_load`, `on_disable`) is caught, logged with a full traceback, and re-raised as a `PluginError`. The `LifecycleManager` catches `PluginError`, marks the plugin as disabled, and Alice continues loading other plugins unaffected.
+
+    **To diagnose the crash:**
+
+    Open `debug.log` and search for lines tagged with `plugin.<your-plugin-id>`. The full traceback is logged there, including the original exception type and line number.
+
+    <Info>
+      If `on_enable` raises an error, Alice also attempts a rollback by calling `on_disable` to clean up any partial state before marking the plugin as disabled.
+    </Info>
+  </Accordion>
+</AccordionGroup>

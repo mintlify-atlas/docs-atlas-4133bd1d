@@ -1,0 +1,75 @@
+---
+title: "Alice architecture: how the runtime is structured"
+description: "Alice is built around a plugin manager, event bus, UI bridge, and permission guard. Learn how these components interact at startup and runtime."
+---
+
+Alice is organized as a set of layered runtime components that cooperate around a central Pydux store. Rather than a monolithic application, it separates concerns across discrete subsystems — each owning a single responsibility — so that plugins can interact with the UI, storage, and inter-plugin messaging without directly coupling to the application shell.
+
+## Component overview
+
+| Component | Responsibility |
+|---|---|
+| `PluginManager` | Orchestrates discovery, loading, and lifecycle transitions for all plugins |
+| `EventBus` | Thread-safe pub/sub bus shared by all plugins and the core |
+| `UIBridge` | Translates plugin widget registrations into PySide6 dock widgets, tabs, and toolbar actions |
+| `PluginRegistry` | Tracks every plugin's `PluginRecord` and current `PluginStatus` |
+| `PermissionGuard` | Enforces manifest-declared permissions at every API call boundary |
+| `PluginDB` | Persists plugin metadata (id, name, version, enabled state) across sessions |
+| `LifecycleManager` | Wraps `on_load`, `on_enable`, and `on_disable` calls in isolated error guards |
+
+## Application startup flow
+
+The startup sequence runs inside `component_will_mount` on the main `Myapp` class, before the first render cycle.
+
+<Steps>
+  <Step title="ApplicationContext and QMainWindow initialized">
+    PySide6 creates the `ApplicationContext` and the `Myapp` instance, which inherits from both `QMainWindow` and `PPGLifeCycle`.
+  </Step>
+  <Step title="Pydux store initialized with schema">
+    The store schema is declared with typed fields including `activities`, `plugins_loaded` (bool), `active_plugin_count` (int), `plugin_errors` (list), `installed_plugins` (list), and `active_plugin_id` (str or None). Initial values are written immediately, pulling the persisted plugin list from `PluginDB`.
+  </Step>
+  <Step title="EventBus and UIBridge created">
+    A single `EventBus` instance is created for the entire application lifetime. A `UIBridge` is created, holding a reference to the `QMainWindow` so plugins can mount widgets without importing Qt directly.
+  </Step>
+  <Step title="PluginManager created">
+    `PluginManager` receives the `event_bus`, `ui_bridge`, and `data_dir`. It internally creates a `PluginRegistry`, `PermissionGuard`, `LifecycleManager`, and `DependencyResolver`.
+  </Step>
+  <Step title="Discovery: scan plugins directory">
+    `PluginManager.discover()` iterates the plugins directory. For each subdirectory that contains a `manifest.json`, it reads and validates the manifest, creates a `PluginRecord`, and registers it in the `PluginRegistry`. The initial status for every record is `DISCOVERED`.
+  </Step>
+  <Step title="Plugin DB upserted">
+    Each discovered record's id, name, and version is upserted into `PluginDB`. The store is updated with the refreshed plugin list so the UI reflects newly installed plugins.
+  </Step>
+  <Step title="Enabled plugins loaded and activated">
+    For each plugin marked `enabled` in the database, `load_plugin()` is called followed by `enable_plugin()`. Successfully enabled plugins increment the `active_plugin_count` in the store. Errors during this phase are caught and logged; they do not abort the remaining plugins.
+  </Step>
+  <Step title="Core event subscriptions registered">
+    The application subscribes to `core.plugin.enabled` and `core.plugin.disabled` on the `EventBus` with `priority=100`. These handlers update the `active_plugin_count` in the store whenever plugins are toggled at runtime.
+  </Step>
+</Steps>
+
+## Plugin status lifecycle
+
+A plugin moves through the following states after discovery:
+
+```
+DISCOVERED → LOADED → ENABLED
+                ↘ ERROR
+                ↘ INCOMPATIBLE
+           ENABLED → DISABLED
+```
+
+- **DISCOVERED** — manifest read, module not yet imported
+- **LOADED** — module imported and `on_load()` completed successfully
+- **ENABLED** — `on_enable()` completed, UI mounted, event subscriptions active
+- **DISABLED** — `on_disable()` completed, UI removed, event subscriptions cleaned up
+- **ERROR** — a failure occurred during loading, enabling, or disabling
+- **INCOMPATIBLE** — the plugin's declared API version range does not include the current runtime version (`1.0.0`)
+
+## Pydux reactive store
+
+Alice uses Pydux — a Redux-style state container — as the shared data layer between the core and the UI views. Every change to the store via `update_store()` triggers `on_store_change()` on all subscribers, which causes views to re-evaluate their render output.
+
+<Note>
+  Because `render_()` can be called multiple times across store updates, the `UIBridge` tracks which plugin widgets have already been mounted and skips duplicate registrations on subsequent renders. Plugin code does not need to guard against this; the bridge handles it transparently.
+</Note>

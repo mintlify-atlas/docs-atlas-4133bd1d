@@ -1,0 +1,223 @@
+---
+title: "UIBridge API: mount plugin widgets into Alice's UI"
+description: "UIBridge manages mounting and removing plugin-provided QWidgets into Alice's docks, tab bar, and toolbar. Prevents duplicate mounts on re-renders."
+---
+
+`UIBridge` is the low-level adapter between the plugin system and Alice's Qt main window. It provides methods to add and remove dock sidebars, central tabs, and toolbar actions, and tracks which slots have already been mounted to prevent duplicates when the UI re-renders (a common pattern in Pydux-driven PPG applications).
+
+<Note>
+  Plugins should use `context.ui` (the `UIContext` wrapper) rather than calling `UIBridge` methods directly. `UIContext` performs permission checks before delegating to `UIBridge`. Only core infrastructure code should interact with `UIBridge` directly.
+</Note>
+
+## Import
+
+```python
+from core.ui.bridge import UIBridge
+```
+
+## Class signature
+
+```python
+class UIBridge(QObject):
+    def __init__(self, main_window: QObject) -> None: ...
+```
+
+<ParamField path="main_window" type="QObject" required>
+  The application's main window instance. `UIBridge` calls `addDockWidget`, accesses `central_tabs`, and accesses `plugin_toolbar` on this object.
+</ParamField>
+
+---
+
+## Slot ID format
+
+Every mount operation returns a `slot_id` string with the format:
+
+```
+{plugin_id}::{type}::{label}
+```
+
+| Type | Label field |
+|---|---|
+| `sidebar` | `title` |
+| `tab` | `title` |
+| `toolbar` | `tooltip` |
+
+Examples: `"com.example.greeter::sidebar::Greeter"`, `"com.example.greeter::tab::Dashboard"`.
+
+`UIBridge` uses these IDs as keys in its internal `_mounted_tabs` dict to detect and skip duplicate mounts.
+
+---
+
+## Methods
+
+### `add_sidebar`
+
+```python
+def add_sidebar(
+    self,
+    plugin_id: str,
+    widget_factory: Callable[[], QWidget],
+    title: str,
+    icon: str = "",
+) -> str
+```
+
+Creates a `QDockWidget` wrapping the widget returned by `widget_factory` and adds it to the `LeftDockWidgetArea` of the main window. The dock is movable and closable.
+
+Returns the `slot_id` for this sidebar (`f"{plugin_id}::sidebar::{title}"`).
+
+<ParamField path="plugin_id" type="str" required>
+  The plugin registering the sidebar, used to namespace the `slot_id` and track the widget for later removal.
+</ParamField>
+
+<ParamField path="widget_factory" type="Callable[[], QWidget]" required>
+  A zero-argument callable that returns the `QWidget` to embed in the dock.
+</ParamField>
+
+<ParamField path="title" type="str" required>
+  The title shown in the `QDockWidget` title bar.
+</ParamField>
+
+<ParamField path="icon" type="str" default='""'>
+  Optional icon identifier. Passed through for future use.
+</ParamField>
+
+**Idempotent:** if a slot with the same `slot_id` is already mounted, the method returns the existing `slot_id` immediately without creating a second dock.
+
+---
+
+### `add_tab`
+
+```python
+def add_tab(
+    self,
+    plugin_id: str,
+    widget_factory: Callable[[], QWidget],
+    title: str,
+) -> str
+```
+
+Adds the widget returned by `widget_factory` as a new tab in Alice's central `QTabWidget` (`main_window.central_tabs`). Returns the `slot_id` (`f"{plugin_id}::tab::{title}"`).
+
+<ParamField path="plugin_id" type="str" required>
+  The plugin registering the tab.
+</ParamField>
+
+<ParamField path="widget_factory" type="Callable[[], QWidget]" required>
+  A zero-argument callable that returns the `QWidget` to display in the tab.
+</ParamField>
+
+<ParamField path="title" type="str" required>
+  The label shown on the tab.
+</ParamField>
+
+**Idempotent:** returns the existing `slot_id` without adding a second tab if the slot is already mounted.
+
+<Warning>
+  If `main_window.central_tabs` does not yet exist when this method is called (e.g. `on_enable` fires before the first `render_()` call), the method logs a warning and returns the `slot_id` without mounting the widget. The tab will not be automatically retried — call `add_tab` again after `central_tabs` is available.
+</Warning>
+
+---
+
+### `add_toolbar_action`
+
+```python
+def add_toolbar_action(
+    self,
+    plugin_id: str,
+    action_factory: Callable[[], QAction],
+    tooltip: str,
+) -> str
+```
+
+Creates a `QAction` from `action_factory`, sets its tooltip, and adds it to `main_window.plugin_toolbar`. Returns the `slot_id` (`f"{plugin_id}::toolbar::{tooltip}"`).
+
+<ParamField path="plugin_id" type="str" required>
+  The plugin registering the action.
+</ParamField>
+
+<ParamField path="action_factory" type="Callable[[], QAction]" required>
+  A zero-argument callable that returns the `QAction` to add to the toolbar.
+</ParamField>
+
+<ParamField path="tooltip" type="str" required>
+  The tooltip text set on the action and used as part of the `slot_id`.
+</ParamField>
+
+**Idempotent:** returns the existing `slot_id` immediately if the slot is already mounted.
+
+---
+
+### `remove_plugin_slots`
+
+```python
+def remove_plugin_slots(self, plugin_id: str) -> None
+```
+
+Removes and destroys all widgets, actions, and tabs registered by `plugin_id`. Handles all three slot types:
+
+- `QDockWidget` — calls `removeDockWidget` and schedules deletion with `deleteLater`.
+- `QAction` — calls `removeAction` on `plugin_toolbar` if it exists.
+- `(QTabWidget, QWidget)` tuple — calls `removeTab` by index.
+
+After removal, all `_mounted_tabs` cache entries starting with `"{plugin_id}::"` are cleared, so the plugin can mount fresh widgets on the next `on_enable`.
+
+Called automatically by `LifecycleManager` at the end of `disable_plugin`, after `on_disable` returns.
+
+---
+
+## Deduplication
+
+`UIBridge` maintains a `_mounted_tabs: dict[str, bool]` keyed by `slot_id`. Every `add_*` method checks this dict before mounting and returns early if the slot already exists. This prevents duplicate widgets from accumulating when the Pydux store triggers multiple `render_()` calls in quick succession.
+
+```python
+# Safe to call multiple times — only one dock is created
+slot = bridge.add_sidebar("com.example.plugin", build_widget, "My Panel")
+slot = bridge.add_sidebar("com.example.plugin", build_widget, "My Panel")  # no-op
+```
+
+---
+
+## Usage example
+
+```python
+from core.ui.bridge import UIBridge
+from PySide6.QtWidgets import QLabel, QApplication
+from PySide6.QtCore import QObject
+
+# Typically created once in application startup code
+bridge = UIBridge(main_window)
+
+# Mount a sidebar
+slot_id = bridge.add_sidebar(
+    plugin_id="com.example.notes",
+    widget_factory=lambda: QLabel("Notes"),
+    title="Notes",
+    icon="notebook",
+)
+# slot_id == "com.example.notes::sidebar::Notes"
+
+# Mount a tab
+tab_slot = bridge.add_tab(
+    plugin_id="com.example.notes",
+    widget_factory=lambda: QLabel("Notes Tab Content"),
+    title="Notes",
+)
+
+# Mount a toolbar action
+from PySide6.QtGui import QAction
+
+def make_action():
+    action = QAction("Open Notes")
+    action.triggered.connect(lambda: print("Notes opened"))
+    return action
+
+toolbar_slot = bridge.add_toolbar_action(
+    plugin_id="com.example.notes",
+    action_factory=make_action,
+    tooltip="Open Notes panel",
+)
+
+# Remove everything when the plugin is disabled
+bridge.remove_plugin_slots("com.example.notes")
+```

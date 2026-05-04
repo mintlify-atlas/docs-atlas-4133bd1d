@@ -1,0 +1,109 @@
+---
+title: "EventBus: decoupled messaging between plugins"
+description: "Alice's EventBus enables thread-safe, priority-ordered pub/sub messaging between plugins. Supports both sync and async handlers with per-plugin isolation."
+---
+
+Alice's `EventBus` is the backbone of inter-component communication. Instead of plugins holding direct references to each other or to the application shell, they publish and subscribe to named events. This keeps plugins loosely coupled and makes it safe to load, enable, or disable them independently at runtime.
+
+## Core concepts
+
+- **Event** — a string identifier for something that happened, e.g. `core.plugin.enabled` or `plugin.com.example.hello.user_action`
+- **Handler** — a callable (sync or async) invoked when a matching event is emitted; receives `(event: str, payload: Any)`
+- **Priority** — an integer controlling execution order across multiple handlers for the same event; higher numbers run first
+- **plugin_id** — a namespace tag attached to every subscription; used for bulk cleanup when a plugin is disabled
+
+## Subscribing to events
+
+From within a plugin, use `context.events.subscribe()`. This requires the `events.subscribe` permission to be declared in the manifest.
+
+```python
+def on_load(self) -> None:
+    self.context.events.subscribe(
+        "core.plugin.enabled",
+        self._on_plugin_enabled,
+        priority=10,
+    )
+
+def _on_plugin_enabled(self, event: str, payload: dict) -> None:
+    plugin_id = payload["plugin_id"]
+    self.context.logger.info(f"Plugin {plugin_id} became active")
+```
+
+You can also subscribe to events emitted by other plugins using their full namespaced event name:
+
+```python
+self.context.events.subscribe(
+    "plugin.com.other.some_event",
+    self._handle_other,
+)
+```
+
+## Emitting events
+
+`context.events.emit()` publishes a plugin-scoped event. The event name is automatically prefixed with `plugin.<plugin_id>.`, so emitting `"user_action"` from `com.example.hello` produces the event `plugin.com.example.hello.user_action`.
+
+```python
+# Emits: "plugin.com.example.hello.user_action"
+self.context.events.emit("user_action", {"button": "submit"})
+```
+
+To emit to the global system namespace (bypassing the automatic prefix), use `emit_global()`. This requires the `events.emit.global` permission.
+
+```python
+# Requires "events.emit.global" in manifest permissions
+self.context.events.emit_global("some.system.event", {"key": "value"})
+```
+
+## Single-shot subscriptions
+
+`EventBus.once()` registers a handler that fires exactly once and then automatically unsubscribes itself:
+
+```python
+self._event_bus.once("core.plugin.enabled", self._handle_first_enable, plugin_id="core")
+```
+
+<Note>
+  Plugin code should use `context.events.subscribe()` rather than calling `EventBus.once()` directly. The `EventsContext` wrapper handles permission checking and plugin_id tagging automatically.
+</Note>
+
+## Priority system
+
+When multiple handlers are subscribed to the same event, they execute in priority order — higher numbers first. Internally, priorities are stored as negative integers in a min-heap so that sorting remains efficient.
+
+```python
+# This handler runs before a handler registered with priority=0
+self.context.events.subscribe("some.event", self._high_priority_handler, priority=10)
+```
+
+The core application subscribes to `core.plugin.enabled` and `core.plugin.disabled` with `priority=100`, ensuring its bookkeeping runs before any plugin handlers.
+
+## Async handlers
+
+The `EventBus` automatically detects async handlers using `asyncio.iscoroutinefunction()`. Async handlers are scheduled via `asyncio.run_coroutine_threadsafe()` onto the configured event loop. If no loop is available, a warning is logged and the handler is skipped.
+
+```python
+async def on_data_ready(self, event: str, payload: dict) -> None:
+    result = await fetch_data(payload["url"])
+    self.context.logger.info(f"Fetched {len(result)} bytes")
+
+self.context.events.subscribe("plugin.com.provider.data_ready", self.on_data_ready)
+```
+
+## Thread safety
+
+Subscription modifications (subscribe, unsubscribe, unsubscribe_all) are protected by a `threading.RLock`. The lock is released before handlers are invoked, so handlers themselves do not hold it.
+
+## Built-in core events
+
+| Event | Payload | Description |
+|---|---|---|
+| `core.plugin.enabled` | `{"plugin_id": str}` | Emitted after a plugin's `on_enable()` completes successfully |
+| `core.plugin.disabled` | `{"plugin_id": str}` | Emitted after a plugin's `on_disable()` completes |
+
+## Event cleanup on disable
+
+When a plugin is disabled, `LifecycleManager` calls `plugin.context.events.unsubscribe_all()`, which removes every subscription that was registered with that plugin's `plugin_id`. Plugins do not need to manually unsubscribe in `on_disable()`.
+
+<Warning>
+  The `EventBus` catches all exceptions raised by handlers and logs them — it never propagates handler errors to the emitter or to other handlers. A handler that throws will be silently skipped (after logging) and the remaining handlers for that event will still execute. Do not rely on exceptions from `emit()` to detect handler failures.
+</Warning>

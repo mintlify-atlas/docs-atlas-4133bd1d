@@ -1,0 +1,104 @@
+---
+title: 'Hot reload: iterate on plugins without restarting'
+description: 'Alice supports hot-reloading plugins during development. Disable a plugin, wait 150ms, then reload it in-place without restarting the application.'
+---
+
+During development, you can reload a plugin without restarting Alice. The `reload_plugin` method disables the current instance, waits for Qt to process cleanup, then reimports the module and re-enables the plugin — letting you iterate on plugin code in a running app.
+
+## How it works
+
+The reload sequence is implemented in `main.py` on the main window class:
+
+```python
+def reload_plugin(self, plugin_id: str):
+    """Recargar un plugin sin reiniciar la app (solo en desarrollo)."""
+    if not app_is_frozen():
+        self._plugin_manager.disable_plugin(plugin_id)
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(150, lambda: (
+            self._plugin_manager.load_plugin(plugin_id),
+            self._plugin_manager.enable_plugin(plugin_id),
+        ))
+```
+
+Hot reload is only available when `app_is_frozen()` returns `False` — that is, when Alice is running from source, not packaged with PyInstaller. In a frozen/production build, calling `reload_plugin` is a no-op.
+
+## The reload sequence
+
+Each step of the sequence maps to a specific lifecycle phase:
+
+<Steps>
+  <Step title="disable_plugin()">
+    Calls `on_disable` on the plugin instance, then removes any registered UI components and unsubscribes all event handlers via `context.ui.unregister_all()` and `context.events.unsubscribe_all()`. The plugin is left in `DISABLED` status.
+  </Step>
+  <Step title="Wait 150 ms (QTimer)">
+    `QTimer.singleShot(150, ...)` yields control back to the Qt event loop. This gives Qt time to process pending UI cleanup events before the new instance is created.
+  </Step>
+  <Step title="load_plugin()">
+    Re-imports the plugin module, creates a fresh instance, and runs `on_load`. The `PluginLoader` must use `importlib.reload()` or clear the relevant entry from `sys.modules` so Python picks up your latest code changes rather than serving the cached module.
+  </Step>
+  <Step title="enable_plugin()">
+    Calls `on_enable` on the new instance, remounts UI components, and sets the plugin status to `ENABLED`.
+  </Step>
+</Steps>
+
+## Triggering a reload
+
+Call `reload_plugin` on the main window's `_plugin_manager` directly from a Python shell or a dev-only button in your plugin:
+
+```python
+# From a Python REPL connected to the running app
+window.reload_plugin("com.yourname.myplugin")
+```
+
+Or from a dev toolbar button that stores a reference to the main window (passed in at startup via a custom mechanism):
+
+```python
+# If you have a reference to the main window instance:
+main_window.reload_plugin("com.yourname.myplugin")
+```
+
+<Note>
+  `PluginContext` does not expose a reference to the main window. There is no `context.app` property. To trigger a reload programmatically, you need a reference to the `Myapp` window instance directly — for example, stored in a module-level dev variable during startup.
+</Note>
+
+## Module reimport and `sys.modules`
+
+Python caches every imported module in `sys.modules`. `PluginLoader.load()` checks this cache and returns the existing class if the module namespace is already present — meaning code changes won't be picked up without explicitly clearing the cache first.
+
+`PluginLoader` provides an `unload()` method that removes the module and all its submodules from `sys.modules`:
+
+```python
+# PluginLoader.unload() removes the module and all submodules
+def unload(self, plugin_id: str) -> None:
+    module = self._loaded.pop(plugin_id, None)
+    if module is None:
+        return
+    prefix = module.__name__
+    to_remove = [k for k in sys.modules if k == prefix or k.startswith(prefix + ".")]
+    for key in to_remove:
+        del sys.modules[key]
+```
+
+The current `reload_plugin` implementation in `main.py` calls `disable_plugin` followed by `load_plugin` but does not explicitly call `loader.unload()`. For changes to be picked up, you may need to call `manager._loader.unload(plugin_id)` after `disable_plugin` and before `load_plugin` in a custom reload workflow:
+
+```python
+window._plugin_manager.disable_plugin("com.yourname.myplugin")
+window._plugin_manager._loader.unload("com.yourname.myplugin")
+window._plugin_manager.load_plugin("com.yourname.myplugin")
+window._plugin_manager.enable_plugin("com.yourname.myplugin")
+```
+
+<Note>
+  If your plugin imports submodules (e.g. `from . import utils`), those are also namespaced under the plugin's module prefix and are automatically cleared by `unload()`.
+</Note>
+
+## State and persistence
+
+<Warning>
+  All in-memory state is lost when a plugin is reloaded. Instance variables, caches, and any data stored only in `self` are discarded when `disable_plugin` destroys the old instance. Persist anything you need to survive a reload — use `storage.set()` inside `on_disable` and restore it in `on_load` or `on_enable`.
+</Warning>
+
+<Tip>
+  Before triggering a reload, call `storage.set()` for any state you want to recover. A common pattern is to write a `_save_state()` helper that you call at the top of `on_disable`, then a `_restore_state()` helper at the top of `on_enable`.
+</Tip>

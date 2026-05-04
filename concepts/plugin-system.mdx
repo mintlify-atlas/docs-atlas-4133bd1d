@@ -1,0 +1,98 @@
+---
+title: "Plugin system: discovery, loading, and lifecycle"
+description: "Alice scans the plugins directory for manifest.json files, validates API compatibility, resolves dependencies, and manages plugin state via PluginRegistry."
+---
+
+The plugin system is the central extensibility mechanism in Alice. It is responsible for finding plugins on disk, verifying they are compatible with the runtime, wiring them into the permission and event systems, and managing their state across the full application lifetime — all while ensuring that a failure in any one plugin cannot crash others.
+
+## Plugin directory structure
+
+Each plugin lives in its own directory under the shared `plugins/` folder. The directory name is typically the plugin's reverse-domain identifier.
+
+```
+plugins/
+  com.example.myplugin/
+    manifest.json       # required: id, name, version, entrypoint, permissions
+    plugin.py           # entrypoint module (class extending PluginBase)
+    wheels/             # optional: pre-downloaded Python wheels
+    lib/                # auto-created by DependencyResolver for installed deps
+```
+
+## Plugin discovery
+
+`PluginManager.discover()` scans the plugins directory at startup:
+
+1. Iterates every subdirectory of the plugins folder.
+2. Skips entries that are not directories or that lack a `manifest.json`.
+3. Loads and validates the manifest via `ManifestLoader`.
+4. Creates a `PluginRecord` containing the plugin's id, name, version, description, author, directory path, and full manifest dict.
+5. Registers the record in `PluginRegistry` with initial status `DISCOVERED`.
+6. Returns the list of discovered records so the caller can upsert them into `PluginDB`.
+
+Manifests that fail validation are logged as errors and skipped; they do not block other plugins from being discovered.
+
+## Plugin loading pipeline
+
+`PluginManager.load_plugin(plugin_id)` runs a multi-step pipeline for each plugin:
+
+<Steps>
+  <Step title="API compatibility check">
+    The manifest's `api_compatibility` block declares a `min` and `max` API version. If the current runtime version (`CURRENT_API_VERSION = "1.0.0"`) falls outside that range, the plugin's status is set to `INCOMPATIBLE` and loading stops.
+  </Step>
+  <Step title="Python dependency resolution">
+    `DependencyResolver.ensure_dependencies()` reads the `dependencies.python` list from the manifest and installs any missing packages into the plugin's `lib/` directory, using any pre-bundled wheels from `wheels/` before reaching out to PyPI. Failures set status to `ERROR`.
+  </Step>
+  <Step title="Permission registration">
+    The manifest's `permissions` list is passed to `PermissionGuard.register_plugin()`. From this point forward, any API call the plugin makes will be checked against this set.
+  </Step>
+  <Step title="Module import via PluginLoader">
+    `PluginLoader.load()` imports the entrypoint module and returns the plugin class. Import time is measured; the `PluginRecord` stores `load_time_ms` for diagnostics. Import errors set status to `ERROR`.
+  </Step>
+  <Step title="PluginContext creation and injection">
+    A `PluginContext` is constructed with the plugin's id, directory, data directory, `EventBus`, `UIBridge`, `PermissionGuard`, and service registry. The plugin class is instantiated with this context as its only constructor argument. The instance is stored in both `PluginManager._instances` and the `PluginRecord`.
+  </Step>
+  <Step title="on_load() execution">
+    `LifecycleManager.load_plugin()` calls the plugin's `on_load()` method inside a `plugin_guard` context manager. `on_load()` should register commands, shortcuts, and providers, but must not mount UI or perform heavy I/O. It must complete in under 500 ms.
+  </Step>
+</Steps>
+
+After a successful load, `PluginManager.enable_plugin()` calls `on_enable()` through the same `LifecycleManager`, which mounts UI and activates event subscriptions. The status moves to `ENABLED` and a `core.plugin.enabled` event is emitted.
+
+## PluginStatus values
+
+| Status | Meaning |
+|---|---|
+| `DISCOVERED` | Manifest read; module not yet imported |
+| `LOADED` | Module imported and `on_load()` completed |
+| `ENABLED` | `on_enable()` completed; UI mounted and events active |
+| `DISABLED` | `on_disable()` completed; UI and events cleaned up |
+| `ERROR` | An exception occurred during any lifecycle phase |
+| `INCOMPATIBLE` | API version range declared in manifest does not include the current runtime |
+
+## Plugin lifecycle hooks
+
+Every plugin extends `PluginBase` and receives a `PluginContext` at construction time. The available lifecycle hooks are:
+
+| Hook | When called | Typical use |
+|---|---|---|
+| `on_install()` | Once, on first install | Create DB tables, initialize storage |
+| `on_load()` | Every startup (abstract — required) | Register commands, shortcuts, providers |
+| `on_enable()` | When user enables plugin | Mount UI widgets, subscribe to events |
+| `on_disable()` | When user disables plugin | Clean up UI and listeners |
+| `on_unload()` | App closing or plugin being removed | Save state, close connections |
+| `on_update(old, new)` | Version upgrade detected | Run data migrations |
+
+<AccordionGroup>
+  <Accordion title="ERROR: module import failed">
+    This occurs when the plugin's entrypoint module raises an exception during import — for example, a syntax error, a missing top-level import, or an exception in module-level code. The full traceback is written to the log. The plugin's status is set to `ERROR` and it will not be retried until the application restarts.
+  </Accordion>
+  <Accordion title="ERROR: on_load() raised an exception">
+    If `on_load()` raises any exception other than `SystemExit` or `KeyboardInterrupt`, `LifecycleManager` catches it, logs the full traceback under the plugin's logger (`plugin.<id>`), and adds the plugin to `_disabled_plugins`. The plugin will not be enabled in the current session.
+  </Accordion>
+  <Accordion title="ERROR: on_enable() raised an exception">
+    If `on_enable()` fails, the lifecycle manager attempts a rollback by immediately calling `on_disable()` to clean up any partial state. The plugin is then added to `_disabled_plugins` and its status is set to `ERROR`.
+  </Accordion>
+  <Accordion title="INCOMPATIBLE: API version mismatch">
+    The manifest's `api_compatibility.min` and `api_compatibility.max` fields are checked against `CURRENT_API_VERSION`. If the runtime version is outside the declared range, the plugin is marked `INCOMPATIBLE` and skipped. No further loading steps are attempted.
+  </Accordion>
+</AccordionGroup>

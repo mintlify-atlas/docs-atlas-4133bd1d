@@ -1,133 +1,63 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
-icon: 'star'
+title: "Alice Assistant: extensible plugin-first AI assistant"
+description: "Alice is a modular, customizable AI assistant built on a permission-sandboxed plugin system, reactive event bus, and cross-platform desktop UI."
 ---
 
-## Setting up
+Alice is a desktop AI assistant framework designed to be extended through plugins. Every feature in Alice — from UI panels to background services — is delivered as a plugin that declares its permissions, dependencies, and lifecycle hooks in a `manifest.json` file. The core runtime handles discovery, loading, sandboxing, and inter-plugin communication so you can focus on building capabilities.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build and load your first Alice plugin in under 10 minutes.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Plugin system" icon="puzzle-piece" href="/concepts/plugin-system">
+    Understand how Alice discovers, validates, and manages plugins.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Building plugins" icon="hammer" href="/plugins/creating-a-plugin">
+    Step-by-step guide to creating a fully functional plugin.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API reference" icon="code" href="/api/plugin-base">
+    Complete reference for PluginBase, PluginContext, EventBus, and more.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## How Alice works
 
-Everything you need to create world-class documentation.
+Alice is built around a few core primitives that every plugin developer interacts with:
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+<Steps>
+  <Step title="Declare a manifest">
+    Each plugin ships a `manifest.json` describing its ID, version, entrypoint, required permissions, and API compatibility range. Alice validates this before loading anything.
+  </Step>
+  <Step title="Extend PluginBase">
+    Your plugin class inherits from `PluginBase` and implements lifecycle hooks (`on_load`, `on_enable`, `on_disable`, etc.). Alice calls these at the right moments.
+  </Step>
+  <Step title="Use PluginContext">
+    Alice injects a `PluginContext` into every plugin instance, giving access to the UI bridge, event bus, isolated storage, inter-plugin services, and a scoped logger — all permission-gated.
+  </Step>
+  <Step title="React to events">
+    Plugins communicate with each other and with the core through the `EventBus`. Subscribe to system events, emit namespaced events, and build reactive features without tight coupling.
+  </Step>
+</Steps>
 
-## Make your content agent ready
+## Key features
 
-Make your docs work for humans and AI agents alike.
-
-<Columns cols={2}>
-  <Card
-    title="Prompt component"
-    icon="robot"
-    href="/agent-ready/prompt"
-  >
-    Embed shareable AI prompts readers can copy or open in Cursor.
+<CardGroup cols={2}>
+  <Card title="Permission sandbox" icon="shield-halved" href="/concepts/permissions">
+    Plugins declare capabilities upfront. The runtime enforces them at every API call.
   </Card>
-  <Card
-    title="Visibility"
-    icon="eye"
-    href="/agent-ready/visibility"
-  >
-    Show different content to humans and agents reading your docs.
+  <Card title="Event bus" icon="bolt" href="/concepts/event-bus">
+    Decoupled async/sync event system with priorities and per-plugin isolation.
   </Card>
-  <Card
-    title="Contextual menu"
-    icon="bolt"
-    href="/agent-ready/contextual"
-  >
-    Give readers one-click access to Claude, ChatGPT, Cursor, and more.
+  <Card title="UI extensions" icon="window" href="/plugins/ui-extensions">
+    Mount sidebars, tabs, toolbar actions, and dialogs from any plugin.
   </Card>
-  <Card
-    title="AI coding tools"
-    icon="wand-magic-sparkles"
-    href="/ai-tools/claude-code"
-  >
-    Set up Claude Code, Cursor, or Windsurf with Mintlify's skill.
+  <Card title="Isolated storage" icon="database" href="/plugins/plugin-context">
+    Each plugin gets its own sandboxed read/write storage namespace.
   </Card>
-</Columns>
-
-## Need inspiration?
-
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+  <Card title="Dependency resolution" icon="box" href="/plugins/dependencies">
+    Embedded wheels or pip fallback — no manual dependency management.
+  </Card>
+  <Card title="Hot reload" icon="arrows-rotate" href="/guides/hot-reload">
+    Reload plugins at runtime during development without restarting Alice.
+  </Card>
+</CardGroup>

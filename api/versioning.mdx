@@ -1,0 +1,128 @@
+---
+title: "API versioning: plugin compatibility with Alice core"
+description: "Alice uses semver API versioning to prevent loading incompatible plugins. Plugins declare min/max API requirements; Alice validates before loading."
+---
+
+Alice assigns a semver version to its plugin API and validates every plugin against that version at load time. Plugins declare the minimum and maximum API versions they support in their manifest; if Alice's current API falls outside that range, the plugin is rejected before any of its code runs. This prevents runtime failures caused by missing features or breaking changes introduced between Alice releases.
+
+```python
+from core.api.versioning import is_compatible, CURRENT_API_VERSION, SemVer
+```
+
+The current API version is:
+
+```python
+CURRENT_API_VERSION = "1.0.0"
+```
+
+## Compatibility policy
+
+Alice follows a strict semver compatibility policy derived from the `is_compatible` docstring:
+
+| Condition | Result |
+|---|---|
+| `current.major != plugin_min.major` | Incompatible — breaking changes |
+| `current.minor < plugin_min.minor` | Incompatible — required features missing |
+| Patch difference only | Compatible — bugfixes only |
+
+The `max` bound uses only the **major** component for its check: if the current major version does not exceed the declared maximum major, the upper bound is satisfied.
+
+## Declaring compatibility in manifest.json
+
+Every plugin must include an `api_compatibility` block in its `manifest.json`:
+
+```json
+"api_compatibility": {
+  "min": "1.0.0",
+  "max": "1.x"
+}
+```
+
+<Note>
+The `x` wildcard is supported in the `max` field. `"1.x"` is treated as `"1.0.0"` for the major version comparison — only the major component is used to evaluate the upper bound.
+</Note>
+
+## SemVer class
+
+`SemVer` is a frozen dataclass that represents a parsed semantic version. It is used internally by `is_compatible` but is also available for direct use.
+
+<AccordionGroup>
+  <Accordion title="SemVer.parse(version)">
+    Class method. Parses a version string in `"major.minor.patch"` format and returns a `SemVer` instance.
+
+    <ParamField path="version" type="string" required>
+      A version string in the format `"1.2.3"`. The parser uses the first three dot-separated numeric groups; any suffix (e.g., `-beta`) is ignored.
+    </ParamField>
+
+    Returns a `SemVer` instance. Raises `ValueError` if the string does not match the expected format.
+  </Accordion>
+
+  <Accordion title="Fields">
+    `SemVer` is a frozen dataclass — all fields are read-only after construction.
+
+    <ResponseField name="major" type="int" required>
+      Major version component.
+    </ResponseField>
+
+    <ResponseField name="minor" type="int" required>
+      Minor version component.
+    </ResponseField>
+
+    <ResponseField name="patch" type="int" required>
+      Patch version component.
+    </ResponseField>
+  </Accordion>
+
+  <Accordion title="__str__">
+    Returns the version as `"major.minor.patch"` (e.g., `"1.0.0"`).
+  </Accordion>
+</AccordionGroup>
+
+## is_compatible function
+
+```python
+def is_compatible(plugin_min: str, plugin_max: str, current: str = CURRENT_API_VERSION) -> bool
+```
+
+Returns `True` if the current API version satisfies the plugin's declared compatibility range. This is the primary function called by `PluginManager` during plugin loading.
+
+<ParamField path="plugin_min" type="string" required>
+  Minimum API version the plugin requires (e.g., `"1.0.0"`). Must be a valid `"major.minor.patch"` string.
+</ParamField>
+
+<ParamField path="plugin_max" type="string" required>
+  Maximum API version the plugin supports (e.g., `"1.x"` or `"2.0.0"`). The `x` wildcard is accepted and treated as `0` for the patch component.
+</ParamField>
+
+<ParamField path="current" type="string" default="CURRENT_API_VERSION">
+  The API version to validate against. Defaults to `CURRENT_API_VERSION`. Override this in tests to simulate future or past Alice versions.
+</ParamField>
+
+Raises `ValueError` if any version string (including those with the `x` wildcard after substitution) cannot be parsed.
+
+### Examples
+
+```python
+from core.api.versioning import is_compatible
+
+is_compatible("1.0.0", "1.x")   # True  — current 1.0.0 is within [1.0.0, 1.x]
+is_compatible("1.1.0", "1.x")   # False — current 1.0.0 minor < required 1.1
+is_compatible("2.0.0", "2.x")   # False — major mismatch (current is 1.x)
+is_compatible("1.0.0", "2.x")   # True  — max major 2 >= current major 1, min major matches
+```
+
+## What happens on incompatibility
+
+When `PluginManager.load_plugin()` determines a plugin is incompatible, it:
+
+1. Sets the plugin's status to `PluginStatus.INCOMPATIBLE`.
+2. Aborts loading — no plugin code is executed.
+3. Logs the following error:
+
+```python
+f"Plugin '{plugin_id}' incompatible con API v{CURRENT_API_VERSION}"
+```
+
+<Note>
+Incompatible plugins remain visible in the plugin list with an "Incompatible" status badge so users know why a plugin did not load, rather than silently disappearing.
+</Note>

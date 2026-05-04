@@ -1,0 +1,213 @@
+---
+title: "EventBus API reference: pub/sub for Alice plugins"
+description: "EventBus provides thread-safe, priority-ordered event pub/sub. Supports sync and async handlers, per-plugin isolation, and single-shot subscriptions."
+---
+
+`EventBus` is the central message-passing backbone of Alice. It decouples plugins from one another and from the core — components emit named events without knowing who listens, and handlers subscribe without knowing who emits. The bus is thread-safe, supports both synchronous and async handlers, dispatches in configurable priority order, and isolates handler errors so a single failing plugin cannot disrupt others.
+
+## Import
+
+```python
+from core.events.bus import EventBus
+```
+
+## Class signature
+
+```python
+class EventBus:
+    def __init__(self) -> None: ...
+```
+
+The constructor takes no arguments. It initialises an empty subscription table, an `RLock` for thread safety, and a `None` event loop reference for async dispatch.
+
+---
+
+## Methods
+
+### `subscribe`
+
+```python
+def subscribe(
+    self,
+    event: str,
+    handler: Callable,
+    plugin_id: str = "core",
+    priority: int = 0,
+) -> None
+```
+
+Registers `handler` to be called whenever `event` is emitted. The subscription list is sorted after each addition so handlers always execute in priority order.
+
+<ParamField path="event" type="str" required>
+  The event name to subscribe to (e.g. `"core.user.login"` or `"plugin.my-plugin.result_saved"`).
+</ParamField>
+
+<ParamField path="handler" type="Callable" required>
+  A callable with signature `(event: str, payload: Any) -> None`. Async coroutine functions are detected automatically via `asyncio.iscoroutinefunction` and dispatched to the configured event loop.
+</ParamField>
+
+<ParamField path="plugin_id" type="str" default='"core"'>
+  The plugin that owns this subscription. Used by `unsubscribe_all` to remove all handlers for a given plugin at once.
+</ParamField>
+
+<ParamField path="priority" type="int" default="0">
+  Dispatch priority. Higher numbers execute before lower numbers. Internally stored as the negative value so that Python's `list.sort()` (ascending) produces the correct descending execution order.
+</ParamField>
+
+<Note>
+  Priority is stored as `-priority` internally. A handler with `priority=10` executes before one with `priority=5`, which executes before the default `priority=0`.
+</Note>
+
+---
+
+### `unsubscribe`
+
+```python
+def unsubscribe(self, event: str, handler: Callable) -> None
+```
+
+Removes a specific handler from `event`'s subscription list. No-op if the handler is not found.
+
+<ParamField path="event" type="str" required>
+  The event name the handler was subscribed to.
+</ParamField>
+
+<ParamField path="handler" type="Callable" required>
+  The exact callable reference that was passed to `subscribe`.
+</ParamField>
+
+---
+
+### `unsubscribe_all`
+
+```python
+def unsubscribe_all(self, plugin_id: str) -> None
+```
+
+Removes every handler registered by `plugin_id` across all events. Called automatically by `LifecycleManager` when a plugin is disabled, so plugins generally do not need to call this manually.
+
+<ParamField path="plugin_id" type="str" required>
+  The plugin whose handlers should be removed.
+</ParamField>
+
+---
+
+### `emit`
+
+```python
+def emit(self, event: str, payload: Any = None) -> None
+```
+
+Dispatches `event` to all registered handlers in priority order. Sync handlers are called in the current thread. Async handlers are scheduled on the event loop configured via `set_event_loop` using `asyncio.run_coroutine_threadsafe`.
+
+<ParamField path="event" type="str" required>
+  The event name to emit.
+</ParamField>
+
+<ParamField path="payload" type="Any" default="None">
+  Optional data to pass to each handler as the second argument.
+</ParamField>
+
+<Note>
+  Exceptions raised by individual handlers are caught, logged with a full traceback, and never propagated. A broken handler in one plugin cannot prevent other handlers from executing.
+</Note>
+
+<Warning>
+  Async handlers require a running event loop. If `set_event_loop` has not been called or the loop is not running, async handlers are skipped and a warning is logged.
+</Warning>
+
+---
+
+### `emit_async`
+
+```python
+async def emit_async(self, event: str, payload: Any = None) -> None
+```
+
+Async version of `emit`. Must be awaited. Async handlers are awaited sequentially; sync handlers are called directly. Use this when you are already inside an async context and want to `await` all handler completions before continuing.
+
+<ParamField path="event" type="str" required>
+  The event name to emit.
+</ParamField>
+
+<ParamField path="payload" type="Any" default="None">
+  Optional data to pass to each handler.
+</ParamField>
+
+---
+
+### `set_event_loop`
+
+```python
+def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None
+```
+
+Sets the event loop that async handlers are dispatched to when `emit` (sync) is called from a non-async context. Typically called once during application startup with the Qt-integrated asyncio loop.
+
+<ParamField path="loop" type="asyncio.AbstractEventLoop" required>
+  The running event loop to use for async handler dispatch.
+</ParamField>
+
+---
+
+### `once`
+
+```python
+def once(
+    self,
+    event: str,
+    handler: Callable,
+    plugin_id: str = "core",
+) -> None
+```
+
+Subscribes `handler` for a single notification. The handler is automatically unsubscribed the first time `event` is emitted, before the handler itself is called.
+
+<ParamField path="event" type="str" required>
+  The event name to subscribe to once.
+</ParamField>
+
+<ParamField path="handler" type="Callable" required>
+  A callable with signature `(event: str, payload: Any) -> None`.
+</ParamField>
+
+<ParamField path="plugin_id" type="str" default='"core"'>
+  The plugin that owns this subscription, for cleanup purposes.
+</ParamField>
+
+---
+
+## Thread safety
+
+`EventBus` uses a `threading.RLock` to protect the subscription table. Subscribing, unsubscribing, and reading the handler list for `emit` are all performed inside `with self._lock` blocks. The lock is reentrant, so a handler that emits another event from the same thread will not deadlock.
+
+---
+
+## Usage example
+
+```python
+from core.events.bus import EventBus
+
+bus = EventBus()
+
+# Sync handler
+def on_login(event: str, payload) -> None:
+    print(f"User logged in: {payload['user_id']}")
+
+bus.subscribe("core.user.login", on_login, plugin_id="com.example.auth", priority=5)
+
+# Async handler — detected automatically
+async def on_login_async(event: str, payload) -> None:
+    await send_welcome_email(payload["email"])
+
+bus.subscribe("core.user.login", on_login_async, plugin_id="com.example.mailer")
+
+# One-shot notification
+bus.once("core.app.ready", lambda e, p: print("App is ready!"))
+
+# Emit the event
+bus.emit("core.user.login", {"user_id": "u_123", "email": "user@example.com"})
+
+# Remove all handlers for a plugin (e.g. on disable)
+bus.unsubscribe_all("com.example.auth")
+```

@@ -1,0 +1,108 @@
+---
+title: "PluginContext: services injected into every plugin"
+description: "Alice injects a PluginContext into every plugin instance with typed sub-contexts for UI, events, storage, services, and logging — all permission-gated."
+---
+
+Every plugin instance receives a single `PluginContext` object as a constructor argument, accessible via `self.context`. It is the complete interface between your plugin and Alice's internals — storage, events, UI, logging, and inter-plugin communication are all accessed through it. Plugins should never import from `core` directly; the context provides everything you need and enforces permission boundaries automatically.
+
+## Sub-contexts at a glance
+
+| Attribute | Type | Description |
+|---|---|---|
+| `context.ui` | `UIContext` | Register sidebars, tabs, toolbar actions, and dialogs |
+| `context.events` | `EventsContext` | Subscribe to and emit EventBus events |
+| `context.storage` | `StorageContext` | Isolated key-value storage scoped to your plugin |
+| `context.services` | `ServicesContext` | Register and consume inter-plugin service interfaces |
+| `context.logger` | `logging.Logger` | Standard library logger scoped to `plugin.{id}` |
+| `context.plugin_id` | `str` | Your plugin's ID string, e.g. `"com.example.myplugin"` |
+| `context.api_version` | `str` | The running Alice API version, e.g. `"1.0.0"` |
+
+## Storage
+
+`StorageContext` provides an isolated key-value store backed by JSON files on disk. Each plugin's data lives under `data_dir/{plugin_id}/` and is inaccessible to other plugins.
+
+```python
+# Write a value (requires storage.write permission)
+context.storage.set("user_prefs", {"theme": "dark"})
+
+# Read with a default (requires storage.read permission)
+prefs = context.storage.get("user_prefs", default={})
+
+# Delete a key (requires storage.write permission)
+context.storage.delete("user_prefs")
+```
+
+Each key is stored as a separate JSON file at `{data_dir}/{plugin_id}/{key}.json`. Read results are cached in memory for the session — repeated `get` calls for the same key do not hit the filesystem.
+
+## Events
+
+`EventsContext` wraps Alice's `EventBus` with automatic namespacing and permission enforcement.
+
+```python
+# Subscribe to an event (requires events.subscribe permission)
+def on_enable(self):
+    self.context.events.subscribe("app.theme_changed", self._handle_theme_change)
+
+def _handle_theme_change(self, event: str, payload):
+    self.context.logger.info("Theme changed: %s", payload)
+
+# Emit a namespaced plugin event (requires events.emit permission)
+# The actual event name becomes: plugin.com.example.myplugin.counter_updated
+self.context.events.emit("counter_updated", {"count": self._count})
+
+# Emit to a global system event (requires events.emit.global — dangerous permission)
+self.context.events.emit_global("app.refresh", None)
+```
+
+All subscriptions registered via `context.events.subscribe` are automatically removed when the plugin is disabled — you do not need to unsubscribe manually.
+
+## Services
+
+`ServicesContext` provides a simple IPC mechanism between plugins. Plugin A registers a service interface; Plugin B retrieves it by ID. Only the interface object is exposed — the concrete implementation is never accessible from outside.
+
+```python
+# Register a service in plugin A's on_load:
+context.services.register_service(
+    "com.example.a.calculator",
+    my_calculator_interface
+)
+
+# Consume the service in plugin B:
+calc = context.services.get_service("com.example.a.calculator")
+result = calc.add(1, 2)
+```
+
+`get_service` raises `KeyError` if the requested service has not been registered. Declare a plugin dependency in your `manifest.json` to ensure the provider plugin loads before your plugin.
+
+## Asset paths
+
+Use `context.get_asset_path()` to build safe paths to files inside your plugin directory. Alice validates that the resolved path does not escape the plugin directory, blocking path traversal attempts.
+
+```python
+# Get a safe path to a file inside the plugin directory
+icon_path = context.get_asset_path("assets/icon.png")
+
+# This raises PermissionError — path traversal is blocked
+bad_path = context.get_asset_path("../../other_plugin/secret.json")
+```
+
+The returned value is an absolute `pathlib.Path`. Pass it directly to Qt or open it with the standard library.
+
+## Logging
+
+Every plugin gets a standard library `Logger` instance scoped to `plugin.{plugin_id}`. Use it instead of `print()` or the root logger so that Alice can route, filter, and display plugin log output correctly.
+
+```python
+def on_load(self):
+    self.context.logger.info("Plugin loaded")
+    self.context.logger.debug("Detailed trace: %s", some_value)
+    self.context.logger.warning("Something unexpected: %s", detail)
+```
+
+<Note>
+  Always use `context.logger` rather than `print()` or `logging.getLogger(__name__)`. Plugin-scoped loggers allow Alice to associate log lines with the originating plugin, apply per-plugin log levels, and surface errors in the Plugin Manager UI.
+</Note>
+
+<Warning>
+  Do not import from `core` directly inside a plugin — for example, `from core.skills.manager import PluginManager`. This bypasses the permission sandbox, creates tight coupling to internal APIs that may change between Alice versions, and can cause circular imports. Everything a plugin needs is available through `self.context`.
+</Warning>

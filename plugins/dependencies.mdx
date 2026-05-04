@@ -1,0 +1,119 @@
+---
+title: "Declare and bundle Python dependencies in plugins"
+description: "Alice resolves plugin Python dependencies via embedded wheels or pip fallback. Declare packages in manifest.json and Alice installs them automatically."
+---
+
+Alice plugins can depend on third-party Python packages. Rather than requiring users to manage a separate virtual environment, Alice's `DependencyResolver` reads the `dependencies.python` list from your plugin's `manifest.json` and ensures every package is available before loading your plugin code. This page explains how to declare dependencies, how Alice resolves them, and how to bundle packages offline using embedded wheels.
+
+## Declaring dependencies in manifest.json
+
+Add a `dependencies` object to your manifest with a `python` array. Each entry specifies a package name and an optional version specifier in pip format.
+
+```json
+"dependencies": {
+  "python": [
+    { "package": "requests", "version": ">=2.28.0" },
+    { "package": "pillow", "version": ">=9.0.0" }
+  ],
+  "plugins": [
+    { "id": "com.example.other-plugin" }
+  ]
+}
+```
+
+The `version` field follows pip's version specifier syntax: `>=1.0.0`, `==2.3.4`, `~=1.2`, etc. Omit it to accept any installed version.
+
+## Resolution strategy
+
+When Alice loads a plugin, `DependencyResolver.ensure_dependencies()` processes each declared package in order. For each package, Alice tries three strategies in sequence:
+
+<Steps>
+  <Step title="Check if already installed">
+    Alice uses `importlib.metadata` to check whether the package is already importable and satisfies the declared version specifier. If it is, nothing further is done for that package.
+
+    ```python
+    dist = importlib.metadata.distribution(package)
+    installed_version = dist.metadata["Version"]
+    # If version_satisfies → skip
+    ```
+  </Step>
+
+  <Step title="Install from embedded wheels">
+    Alice looks for a `.whl` file in the `wheels/` subdirectory of the plugin folder whose filename starts with the package name. If a matching wheel is found, Alice installs it into the plugin's `lib/` directory.
+
+    ```
+    plugins/
+      com.example.myplugin/
+        wheels/
+          requests-2.31.0-py3-none-any.whl
+          certifi-2024.2.2-py3-none-any.whl
+    ```
+
+    This strategy works without internet access and is the recommended approach for distributed apps.
+  </Step>
+
+  <Step title="Fall back to pip install">
+    If the package is not installed and no matching wheel is found, Alice runs:
+
+    ```bash
+    pip install "{package}{version}" \
+      --target plugin_dir/lib/ \
+      --quiet \
+      --no-deps
+    ```
+
+    The package is installed into the plugin's `lib/` directory, which is added to `sys.path` before the plugin loads.
+  </Step>
+</Steps>
+
+## The lib/ directory
+
+Alice automatically creates a `lib/` directory inside each plugin folder and adds it to `sys.path` before loading the plugin. Dependencies installed by any of the three strategies above land here.
+
+```
+plugins/
+  com.example.myplugin/
+    manifest.json
+    plugin.py
+    wheels/        # source wheels (committed to your plugin repo)
+    lib/           # installed packages (auto-generated, do not commit)
+```
+
+Add `lib/` to your `.gitignore` — it is regenerated automatically by Alice on each install.
+
+## Bundling wheels for offline use
+
+Download `.whl` files for your target platforms and place them in the `wheels/` directory. Alice will install them into `lib/` the first time the plugin loads.
+
+```bash
+# Download a wheel without installing it
+pip download requests>=2.28.0 --no-deps -d plugins/com.example.myplugin/wheels/
+```
+
+Commit the `wheels/` directory to your plugin repository. Users who install your plugin will not need internet access for dependency resolution.
+
+## Plugin-to-plugin dependencies
+
+If your plugin depends on another plugin being loaded first, declare it under `dependencies.plugins`:
+
+```json
+"dependencies": {
+  "plugins": [
+    { "id": "com.example.other-plugin" }
+  ]
+}
+```
+
+Alice uses a topological sort (`topological_sort` in `dependency.py`) to determine load order. A plugin is always loaded after all of its declared plugin dependencies. Circular dependencies are not supported and will cause one of the involved plugins to fail to load.
+
+<Warning>
+  Alice installs Python packages with `--no-deps`, which means pip does **not** automatically install transitive dependencies. Every package your plugin needs — including packages required by your direct dependencies — must be declared explicitly in `dependencies.python`. Missing transitive dependencies will cause an `ImportError` at runtime.
+</Warning>
+
+<Note>
+  Version specifiers follow pip's standard format. Supported operators include `>=`, `<=`, `==`, `!=`, `~=`, and `>` / `<`. Examples: `>=2.28.0`, `==1.4.2`, `~=1.2` (compatible release, equivalent to `>=1.2, <2.0`). If no version specifier is provided, any installed version is accepted.
+</Note>
+
+<Tip>
+  For plugins distributed as standalone packages or bundled with a PyInstaller-frozen Alice build, always embed your wheels. Internet access at runtime is not guaranteed, and pip fallback adds startup latency. Keep wheels in the `wheels/` directory, commit them with your plugin, and omit `lib/` from version control.
+</Tip>

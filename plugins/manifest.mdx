@@ -1,0 +1,135 @@
+---
+title: "Plugin manifest.json: schema and required fields"
+description: "Every Alice plugin must include a manifest.json declaring its ID, version, entrypoint, permissions, and API compatibility range. This page covers every field."
+---
+
+Every Alice plugin must include a `manifest.json` file at the root of its directory. Alice reads this file before loading any Python code — if the manifest is missing, invalid JSON, or fails schema validation, the plugin is rejected before any code runs. This page documents every field that Alice's `ManifestLoader` recognises and validates.
+
+## Full example
+
+```json
+{
+  "schema_version": "1",
+  "id": "com.example.myplugin",
+  "name": "My Plugin",
+  "version": "1.0.0",
+  "description": "A short description of what this plugin does.",
+  "author": { "name": "Your Name" },
+  "entrypoint": "plugin:MyPlugin",
+  "permissions": [
+    "ui.tab",
+    "storage.read",
+    "storage.write",
+    "events.subscribe",
+    "events.emit"
+  ],
+  "api_compatibility": {
+    "min": "1.0.0",
+    "max": "1.x"
+  },
+  "dependencies": {
+    "python": [
+      { "package": "requests", "version": ">=2.28.0" }
+    ],
+    "plugins": [
+      { "id": "com.example.other" }
+    ]
+  }
+}
+```
+
+## Fields
+
+<ParamField path="schema_version" type="string" required>
+  The manifest schema version. Must be `"1"` for the current Alice release. Alice uses this field to detect and reject manifests written for a different schema revision.
+</ParamField>
+
+<ParamField path="id" type="string" required>
+  The plugin's unique reverse-domain identifier. Must match the pattern `^[a-z0-9]+(\.[a-z0-9\-]+)+$` — all lowercase, alphanumeric segments separated by dots, with optional hyphens within segments. Examples: `com.example.myplugin`, `org.alice.builtin-search`.
+</ParamField>
+
+<ParamField path="name" type="string" required>
+  The human-readable display name shown in the Plugin Manager UI and in log output. Must be at least one character.
+</ParamField>
+
+<ParamField path="version" type="string" required>
+  The plugin's version as a semver string in `MAJOR.MINOR.PATCH` format — for example, `"1.0.0"`. Alice uses this value when calling `on_update(old_version, new_version)` during upgrades.
+</ParamField>
+
+<ParamField path="entrypoint" type="string" required>
+  The module file and class name that Alice should instantiate, separated by a colon. Format: `module_filename:ClassName`. For example, `"plugin:MyPlugin"` tells Alice to load `plugin.py` and instantiate `MyPlugin`. The module name is relative to the plugin directory and must not include the `.py` extension.
+</ParamField>
+
+<ParamField path="description" type="string">
+  A short human-readable description of what the plugin does. Displayed in the Plugin Manager. Optional but recommended.
+</ParamField>
+
+<ParamField path="author" type="object">
+  Author information. Currently supports a single `name` field:
+
+  ```json
+  { "name": "Your Name" }
+  ```
+</ParamField>
+
+<ParamField path="permissions" type="string[]">
+  The list of permission strings the plugin requires. Alice's `PermissionGuard` checks this list at runtime — any API call that requires a permission not declared here will raise a `PermissionError` and be logged. Declare only the permissions your plugin actually uses.
+
+  Available permission strings:
+
+  | Permission | What it grants |
+  |---|---|
+  | `ui.sidebar` | Register a dock sidebar panel |
+  | `ui.tab` | Register a central tab |
+  | `ui.toolbar` | Add a toolbar action |
+  | `ui.dialog` | Open a modal dialog |
+  | `storage.read` | Read from isolated plugin storage |
+  | `storage.write` | Write to isolated plugin storage |
+  | `events.subscribe` | Subscribe to EventBus events |
+  | `events.emit` | Emit namespaced plugin events |
+  | `events.emit.global` | Emit to global system events (dangerous) |
+  | `network.http` | Make HTTP requests (dangerous) |
+  | `network.ws` | Open WebSocket connections (dangerous) |
+  | `shell.exec` | Execute shell commands (dangerous — requires manual review) |
+  | `fs.read` | Read files outside the app directory |
+  | `fs.write` | Write files outside the app directory (dangerous) |
+</ParamField>
+
+<ParamField path="api_compatibility" type="object" required>
+  The range of Alice API versions this plugin is compatible with. Alice rejects plugins whose compatibility range does not include the running API version.
+
+  ```json
+  "api_compatibility": {
+    "min": "1.0.0",
+    "max": "1.x"
+  }
+  ```
+
+  Both `min` and `max` are required sub-fields.
+</ParamField>
+
+<ParamField path="dependencies.python" type="object[]">
+  A list of Python package dependencies. Each entry is an object with a `package` name and an optional `version` specifier using pip format.
+
+  ```json
+  { "package": "requests", "version": ">=2.28.0" }
+  ```
+
+  Alice resolves these before loading the plugin. See [Declare and bundle Python dependencies](/plugins/dependencies) for the full resolution strategy.
+</ParamField>
+
+<ParamField path="dependencies.plugins" type="object[]">
+  A list of other Alice plugins this plugin depends on. Each entry is an object with an `id` field. Alice uses topological sort to ensure dependent plugins load first.
+
+  ```json
+  { "id": "com.example.other" }
+  ```
+</ParamField>
+
+<Warning>
+  The `id` field must match the plugin's directory name exactly. If your directory is `plugins/com.example.myplugin/`, the `id` must be `"com.example.myplugin"`. A mismatch causes Alice to reject the plugin during discovery.
+</Warning>
+
+<Note>
+  The `entrypoint` format is `module_filename:ClassName` where the module name is the Python file name without the `.py` extension, relative to the plugin directory. For a file at `com.example.myplugin/plugin.py` containing a class `MyPlugin`, the entrypoint is `"plugin:MyPlugin"`. Nested module paths are also supported — `"handlers.main:MainHandler"` loads `handlers/main.py`.
+</Note>

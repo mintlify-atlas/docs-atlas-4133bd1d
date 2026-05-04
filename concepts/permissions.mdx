@@ -1,0 +1,92 @@
+---
+title: "Permission model: sandbox and capability declarations"
+description: "Alice plugins declare required permissions in their manifest. The PermissionGuard enforces these at every API call, preventing unauthorized resource access."
+---
+
+Alice follows a capability-based permission model inspired by mobile app stores. A plugin must declare every capability it needs in its `manifest.json` before the runtime will grant access to that feature. The `PermissionGuard` enforces these declarations at every API call boundary, making it impossible for a plugin to accidentally use a capability it did not explicitly request.
+
+## Declaring permissions in the manifest
+
+Add a `permissions` array to your `manifest.json` listing every permission string your plugin requires:
+
+```json
+{
+  "id": "com.example.myplugin",
+  "name": "My Plugin",
+  "version": "1.0.0",
+  "permissions": [
+    "ui.tab",
+    "storage.read",
+    "storage.write",
+    "events.subscribe",
+    "events.emit"
+  ]
+}
+```
+
+Permissions are registered during the loading pipeline, before the plugin module is imported. Any permission not listed here will cause a `PermissionError` at runtime.
+
+## Available permissions
+
+| Permission | Description |
+|---|---|
+| `ui.sidebar` | Register a dock widget in the left sidebar |
+| `ui.tab` | Register a tab in the central tab area |
+| `ui.toolbar` | Add actions to the plugin toolbar |
+| `ui.dialog` | Show modal dialogs |
+| `storage.read` | Read values from the plugin's isolated key-value storage |
+| `storage.write` | Write or delete values in the plugin's isolated storage |
+| `events.subscribe` | Subscribe to events on the `EventBus` |
+| `events.emit` | Emit plugin-namespaced events (auto-prefixed as `plugin.<id>.<event>`) |
+| `events.emit.global` | Emit events directly to the global system namespace |
+| `network.http` | Make outbound HTTP requests |
+| `network.ws` | Use WebSocket connections |
+| `shell.exec` | Execute shell commands — requires manual review before distribution |
+| `fs.read` | Read files from paths outside the application directory |
+| `fs.write` | Write files to the filesystem |
+
+<Warning>
+  The following permissions are classified as **dangerous** and require explicit user approval before a plugin using them can be enabled:
+
+  - `shell.exec` — can execute arbitrary system commands
+  - `fs.write` — can modify files anywhere on the filesystem
+  - `network.http` — can make outbound HTTP requests to any host
+  - `network.ws` — can open persistent WebSocket connections
+  - `events.emit.global` — can inject events into the core system namespace
+
+  Plugins declaring dangerous permissions should be reviewed carefully before distribution.
+</Warning>
+
+## What happens when a permission is missing
+
+If a plugin attempts to call an API method without the required permission, `PermissionGuard.require()` raises a `PermissionError` with a descriptive message identifying the plugin and the missing permission:
+
+```
+PermissionError: Plugin 'com.example.myplugin' requires permission 'ui.sidebar'
+not declared in its manifest.
+```
+
+The error is also written to the application log at `ERROR` level.
+
+```python
+# This will raise PermissionError if "ui.sidebar" is not declared in the manifest:
+slot_id = context.ui.register_sidebar(
+    widget_factory=MyWidget,
+    title="My Panel",
+    icon="panel"
+)
+```
+
+All `PluginContext` sub-APIs (`ui`, `events`, `storage`) call `PermissionGuard.require()` internally before forwarding to the underlying service. Plugin code does not need to check permissions manually.
+
+## Security model and limitations
+
+The `PermissionGuard` operates at the Python function call level, not at the operating system level. It is effective at preventing plugins from **accidentally** using capabilities they did not declare, but it does not constitute a full security sandbox.
+
+<Warning>
+  A determined malicious plugin can bypass the permission system by importing Python standard library modules directly — for example, using `import subprocess` instead of `context.shell.exec`. The guard only protects against calls made through `PluginContext`.
+
+  For environments where untrusted third-party plugins must be isolated completely, the recommended approach is to run plugins in separate subprocesses with IPC, rather than in-process with `PermissionGuard` alone.
+</Warning>
+
+The model is explicitly designed to catch and surface **involuntary** capability violations — configuration mistakes, copy-paste errors, and dependency surprises — which covers the vast majority of real-world cases in a curated plugin ecosystem.

@@ -1,0 +1,166 @@
+---
+title: "Install Alice: set up your development environment"
+description: "Install Alice's Python dependencies, set up your development environment on Linux, macOS, or Windows, and verify the installation is working."
+---
+
+Alice is a Python desktop application built on PySide6 for the UI and `ppg_runtime` for the application lifecycle. Installing Alice means cloning the repository, creating a Python virtual environment, and installing the platform-specific dependencies. No compiled extensions or system packages are required beyond Python 3.10 and pip.
+
+## Prerequisites
+
+- Python 3.10 or later
+- `pip` (bundled with Python 3.10+)
+- `git`
+
+<Warning>
+  Alice requires PySide6, which depends on a running graphical display server. It cannot run in a headless environment (such as a plain SSH session or a minimal CI container) without a virtual framebuffer like `xvfb`.
+</Warning>
+
+## Installation
+
+<Tabs>
+  <Tab title="Linux">
+    <Steps>
+      <Step title="Clone the repository">
+        ```bash
+        git clone https://github.com/runesc/Alice
+        cd Alice
+        ```
+      </Step>
+
+      <Step title="Create a virtual environment">
+        ```bash
+        python3 -m venv .venv
+        ```
+      </Step>
+
+      <Step title="Activate the virtual environment">
+        ```bash
+        source .venv/bin/activate
+        ```
+
+        Your prompt will change to show `(.venv)` when the environment is active.
+      </Step>
+
+      <Step title="Install dependencies">
+        Start with the base requirements, then install the Linux-specific file:
+
+        ```bash
+        pip install -r requirements/base.txt
+        pip install -r requirements/linux.txt
+        ```
+
+        <Note>
+          The requirements files are intentionally minimal — core dependencies like PySide6 and `ppg_runtime` are resolved by the platform-specific file for your OS. If `requirements/linux.txt` is empty in your checkout, check the project README or `pyproject.toml` for the canonical dependency list.
+        </Note>
+      </Step>
+
+      <Step title="Run Alice">
+        ```bash
+        python src/main/python/main.py
+        ```
+
+        Alice opens a desktop window and writes startup logs to `debug.log` in the project root.
+      </Step>
+    </Steps>
+  </Tab>
+
+  <Tab title="macOS">
+    <Steps>
+      <Step title="Clone the repository">
+        ```bash
+        git clone https://github.com/runesc/Alice
+        cd Alice
+        ```
+      </Step>
+
+      <Step title="Create a virtual environment">
+        ```bash
+        python3 -m venv .venv
+        ```
+      </Step>
+
+      <Step title="Activate the virtual environment">
+        ```bash
+        source .venv/bin/activate
+        ```
+      </Step>
+
+      <Step title="Install dependencies">
+        ```bash
+        pip install -r requirements/base.txt
+        pip install -r requirements/mac.txt
+        ```
+      </Step>
+
+      <Step title="Run Alice">
+        ```bash
+        python src/main/python/main.py
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+
+  <Tab title="Windows">
+    <Steps>
+      <Step title="Clone the repository">
+        ```powershell
+        git clone https://github.com/runesc/Alice
+        cd Alice
+        ```
+      </Step>
+
+      <Step title="Create a virtual environment">
+        ```powershell
+        python -m venv .venv
+        ```
+      </Step>
+
+      <Step title="Activate the virtual environment">
+        ```powershell
+        .venv\Scripts\activate
+        ```
+
+        PowerShell may require you to allow script execution first:
+
+        ```powershell
+        Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+        ```
+      </Step>
+
+      <Step title="Install dependencies">
+        ```powershell
+        pip install -r requirements/base.txt
+        pip install -r requirements/windows.txt
+        ```
+      </Step>
+
+      <Step title="Run Alice">
+        ```powershell
+        python src/main/python/main.py
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+## Verify the installation
+
+When Alice starts successfully, you should see:
+
+- The Alice desktop window open with the authentication screen.
+- A `debug.log` file created in the project root containing startup log lines similar to:
+
+  ```
+  2026-05-04 12:00:00,123 [__main__] DEBUG — ...
+  ```
+
+- A `plugins/` directory created at the project root (Alice creates this on first run if it does not exist).
+
+<Note>
+  The `plugins/` directory is where you place your own plugins. Alice scans it at startup and loads any subdirectory that contains a valid `manifest.json`. You do not need to register plugins anywhere else.
+</Note>
+
+## Next steps
+
+- Follow the [Quickstart](/quickstart) to write and load your first plugin.
+- Read the [Plugin system overview](/concepts/plugin-system) to understand how discovery and loading work.

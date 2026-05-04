@@ -1,0 +1,111 @@
+{
+  "projectType": "framework",
+  "projectName": "Alice Assistant",
+  "projectDescription": "An extensible, modular AI assistant built on a plugin-first architecture with a permission-sandboxed skill system, event bus, and cross-platform desktop UI.",
+  "theme": "palm",
+  "primaryColor": "#6C63FF",
+  "lightColor": "#EAE9FF",
+  "darkColor": "#3B35B5",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/plugin-system",
+              "concepts/event-bus",
+              "concepts/permissions"
+            ]
+          },
+          {
+            "group": "Building Plugins",
+            "pages": [
+              "plugins/creating-a-plugin",
+              "plugins/manifest",
+              "plugins/lifecycle",
+              "plugins/plugin-context",
+              "plugins/ui-extensions",
+              "plugins/dependencies"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/hot-reload",
+              "guides/troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Plugin API",
+            "pages": [
+              "api/plugin-base",
+              "api/plugin-context",
+              "api/event-bus",
+              "api/ui-bridge",
+              "api/plugin-manager"
+            ]
+          },
+          {
+            "group": "Internals",
+            "pages": [
+              "api/permissions",
+              "api/versioning"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Plugin-first architecture with manifest-driven discovery and loading",
+    "Permission sandbox system with declared capabilities (ui, storage, events, network, fs)",
+    "Decoupled EventBus with async support, priorities, and per-plugin isolation",
+    "Plugin lifecycle hooks: on_install, on_load, on_enable, on_disable, on_unload, on_update",
+    "UIBridge for mounting sidebars, tabs, toolbar actions, and dialogs from plugins",
+    "Isolated per-plugin storage context with read/write isolation",
+    "Cross-plugin service registry for safe inter-plugin communication (IPC)",
+    "Dependency resolver with embedded wheel support and pip fallback",
+    "Semver API compatibility checking to prevent incompatible plugin loading",
+    "Hot-reload support for plugins during development"
+  ],
+  "publicApiSurface": [
+    "PluginBase (abstract base class all plugins must extend)",
+    "PluginContext (context injected into every plugin: ui, events, storage, services, logger)",
+    "UIContext.register_sidebar(widget_factory, title, icon)",
+    "UIContext.register_tab(widget_factory, title)",
+    "UIContext.register_toolbar_action(action_factory, tooltip)",
+    "UIContext.show_dialog(dialog_factory)",
+    "EventsContext.subscribe(event, handler, priority)",
+    "EventsContext.emit(event, payload)",
+    "EventsContext.emit_global(event, payload)",
+    "StorageContext.set(key, value)",
+    "StorageContext.get(key, default)",
+    "StorageContext.delete(key)",
+    "ServicesContext.get_service(service_id)",
+    "ServicesContext.register_service(service_id, interface)",
+    "PluginManager.discover()",
+    "PluginManager.load_plugin(plugin_id)",
+    "PluginManager.enable_plugin(plugin_id)",
+    "PluginManager.disable_plugin(plugin_id)",
+    "EventBus.subscribe(event, handler, plugin_id, priority)",
+    "EventBus.emit(event, payload)",
+    "EventBus.unsubscribe_all(plugin_id)",
+    "manifest.json schema (id, name, version, entrypoint, permissions, api_compatibility, dependencies)"
+  ]
+}

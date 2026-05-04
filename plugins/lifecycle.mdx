@@ -1,0 +1,109 @@
+---
+title: "Plugin lifecycle: hooks and execution order"
+description: "Alice calls six lifecycle hooks on every plugin: on_install, on_load, on_enable, on_disable, on_unload, and on_update. Learn when each runs and what to do in each."
+---
+
+Alice manages every plugin through a well-defined lifecycle. Separating concerns across distinct hooks — loading resources, mounting UI, cleaning up on disable — keeps plugins predictable and prevents state leaks between sessions. Each hook maps to a concrete moment in Alice's startup, runtime, and shutdown sequences.
+
+## Execution order
+
+The normal lifecycle progresses in this order:
+
+```
+Install → Load → Enable ↔ Disable → Unload
+```
+
+- **Install** — runs once, the first time the plugin is added to Alice.
+- **Load** — runs every time Alice starts and the plugin is enabled.
+- **Enable / Disable** — can happen multiple times per session as the user toggles the plugin.
+- **Unload** — runs when Alice closes or the plugin is removed.
+- **Update** — runs out-of-band when the installed version changes between sessions.
+
+## Hooks
+
+### on_install()
+
+Called once when the plugin is first installed into Alice. It does not run again on subsequent launches.
+
+Use `on_install` for one-time setup: creating storage keys with default values, initialising database tables, or running first-launch migrations.
+
+```python
+def on_install(self) -> None:
+    self.context.storage.set("settings", {
+        "theme": "light",
+        "max_items": 100,
+    })
+    self.context.logger.info("First-time setup complete")
+```
+
+### on_load()
+
+**Required** — `on_load` is the only abstract method in `PluginBase`. Every plugin must implement it.
+
+Called every time Alice starts and the plugin is enabled. Use it to register commands, keyboard shortcuts, or service providers. Do not mount UI components here — the main window may not have finished rendering.
+
+```python
+def on_load(self) -> None:
+    self._count = self.context.storage.get("count", 0)
+    self.context.logger.info("Plugin loaded, count restored: %d", self._count)
+```
+
+### on_enable()
+
+Called when the user enables the plugin from the Plugin Manager, or automatically after `on_load` if the plugin was already enabled in the previous session.
+
+Mount UI components and subscribe to EventBus events here. Both `context.ui` and `context.events` are ready at this point.
+
+```python
+def on_enable(self) -> None:
+    self.context.ui.register_tab(self.get_main_widget, title="My Plugin")
+    self.context.events.subscribe("core.plugin.enabled", self._on_plugin_enabled)
+```
+
+### on_disable()
+
+Called when the user disables the plugin. This is the mirror of `on_enable`: save state and release resources acquired during `on_enable`.
+
+You do not need to manually remove registered UI slots or event listeners — Alice calls `context.ui.unregister_all()` and `context.events.unsubscribe_all()` automatically after `on_disable` returns.
+
+```python
+def on_disable(self) -> None:
+    self.context.storage.set("count", self._count)
+    self.context.logger.info("Plugin disabled, state saved")
+```
+
+### on_unload()
+
+Called when Alice closes or the plugin is permanently removed. Use it for cleanup that must happen at process teardown: flushing buffers, closing open file handles, stopping background threads.
+
+```python
+def on_unload(self) -> None:
+    if hasattr(self, "_worker_thread") and self._worker_thread.is_alive():
+        self._worker_thread.join(timeout=2.0)
+    self.context.logger.info("Plugin unloaded cleanly")
+```
+
+### on_update(old_version, new_version)
+
+Called when Alice detects that the installed plugin version differs from the version recorded in Alice's internal registry. Both version strings are passed as arguments so migrations can be conditional.
+
+```python
+def on_update(self, old_version: str, new_version: str) -> None:
+    self.context.logger.info(
+        "Migrating from %s to %s", old_version, new_version
+    )
+    if old_version < "2.0.0":
+        # Rename a storage key introduced in 2.0.0
+        old_value = self.context.storage.get("prefs")
+        if old_value is not None:
+            self.context.storage.set("user_prefs", old_value)
+            self.context.storage.delete("prefs")
+```
+
+<Warning>
+  `on_load` must complete in under 500 ms. Alice loads all enabled plugins sequentially at startup, so a slow `on_load` blocks the entire application from becoming responsive. Defer expensive operations — network calls, large file reads, heavy computation — to a background thread started in `on_enable`, or to lazy initialisation triggered by first user interaction.
+</Warning>
+
+<Note>
+  If `on_load` raises an exception, Alice wraps it in a `PluginError`, marks the plugin as `ERROR`, disables it for the rest of the session, and continues loading the remaining plugins. The full traceback is written to the plugin's scoped logger (`plugin.{id}`). This isolation is implemented by the `plugin_guard` context manager in `lifecycle.py` — a crash in one plugin never prevents others from loading.
+</Note>

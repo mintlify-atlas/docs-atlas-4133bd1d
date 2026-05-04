@@ -1,0 +1,430 @@
+---
+title: "PluginContext API: UI, events, storage, and services"
+description: "PluginContext is injected into every plugin. It provides typed sub-contexts for UI registration, event pub/sub, isolated storage, and inter-plugin services."
+---
+
+`PluginContext` is the single object that bridges a plugin to the Alice framework. It is created by `PluginManager` and passed to `PluginBase.__init__` during loading. Plugins must never import from `core.*` directly — every framework capability is available through the context and its four sub-contexts: `context.ui`, `context.events`, `context.storage`, and `context.services`.
+
+## Import
+
+```python
+from core.skills.context import PluginContext
+```
+
+## Constructor parameters
+
+<ParamField path="plugin_id" type="str" required>
+  The unique string identifier for this plugin, taken from its `manifest.json`.
+</ParamField>
+
+<ParamField path="plugin_dir" type="Path" required>
+  Absolute path to the plugin's source directory on disk.
+</ParamField>
+
+<ParamField path="data_dir" type="Path" required>
+  Root data directory used by the framework for plugin storage. Each plugin receives an isolated subdirectory under this path.
+</ParamField>
+
+<ParamField path="bus" type="EventBus" required>
+  The shared `EventBus` instance for the application.
+</ParamField>
+
+<ParamField path="bridge" type="UIBridge" required>
+  The shared `UIBridge` instance for mounting widgets into Alice's main window.
+</ParamField>
+
+<ParamField path="guard" type="PermissionGuard" required>
+  The permission guard that enforces the permission list declared in the plugin's manifest.
+</ParamField>
+
+<ParamField path="service_registry" type="dict" required>
+  Shared dictionary used by `ServicesContext` for inter-plugin service discovery.
+</ParamField>
+
+<ParamField path="api_version" type="str" required>
+  The current Alice API version string (e.g. `"1.0.0"`), passed through from `CURRENT_API_VERSION`.
+</ParamField>
+
+## Properties
+
+<ResponseField name="plugin_id" type="str" required>
+  The unique plugin identifier.
+</ResponseField>
+
+<ResponseField name="api_version" type="str" required>
+  The Alice API version this plugin was loaded against.
+</ResponseField>
+
+<ResponseField name="logger" type="logging.Logger" required>
+  A standard `logging.Logger` scoped to `plugin.{plugin_id}`. Use this instead of calling `logging.getLogger` directly so that log output is correctly attributed and can be filtered per plugin.
+</ResponseField>
+
+<ResponseField name="ui" type="UIContext" required>
+  Sub-context for registering UI components. See [UIContext](#uicontext-context-ui) below.
+</ResponseField>
+
+<ResponseField name="events" type="EventsContext" required>
+  Sub-context for publishing and subscribing to events. See [EventsContext](#eventscontext-context-events) below.
+</ResponseField>
+
+<ResponseField name="storage" type="StorageContext" required>
+  Sub-context for isolated JSON key-value storage. See [StorageContext](#storagecontext-context-storage) below.
+</ResponseField>
+
+<ResponseField name="services" type="ServicesContext" required>
+  Sub-context for inter-plugin service discovery. See [ServicesContext](#servicescontext-context-services) below.
+</ResponseField>
+
+## Methods
+
+### `get_asset_path`
+
+```python
+def get_asset_path(self, relative: str) -> Path
+```
+
+Resolves a path relative to the plugin's source directory and returns an absolute `Path`. Raises `PermissionError` if the resolved path escapes the plugin directory (path traversal protection).
+
+<ParamField path="relative" type="str" required>
+  A relative path string, e.g. `"assets/icon.png"`.
+</ParamField>
+
+```python
+icon_path = self.context.get_asset_path("assets/icon.png")
+```
+
+---
+
+## UIContext (`context.ui`)
+
+`UIContext` is a permission-checked proxy over `UIBridge`. Every method requires the corresponding permission to be declared in the plugin's `manifest.json`.
+
+### `register_sidebar`
+
+```python
+def register_sidebar(
+    self,
+    widget_factory: Callable,
+    title: str,
+    icon: str = "",
+) -> str
+```
+
+Mounts a `QDockWidget` in Alice's left dock area. Returns a `slot_id` string that can be used to track the mounted widget.
+
+Requires permission: `ui.sidebar`
+
+<ParamField path="widget_factory" type="Callable" required>
+  A zero-argument callable that returns a `QWidget`. Called once when the sidebar is first mounted.
+</ParamField>
+
+<ParamField path="title" type="str" required>
+  The display title shown in the dock widget header.
+</ParamField>
+
+<ParamField path="icon" type="str" default='""'>
+  Optional icon name or path. Currently passed through to the bridge for future use.
+</ParamField>
+
+---
+
+### `register_tab`
+
+```python
+def register_tab(self, widget_factory: Callable, title: str) -> str
+```
+
+Adds a tab to Alice's central `QTabWidget`. Returns a `slot_id`.
+
+Requires permission: `ui.tab`
+
+<ParamField path="widget_factory" type="Callable" required>
+  A zero-argument callable that returns a `QWidget` to display in the tab.
+</ParamField>
+
+<ParamField path="title" type="str" required>
+  The label shown on the tab.
+</ParamField>
+
+---
+
+### `register_toolbar_action`
+
+```python
+def register_toolbar_action(self, action_factory: Callable, tooltip: str) -> str
+```
+
+Adds a `QAction` to Alice's plugin toolbar. Returns a `slot_id`.
+
+Requires permission: `ui.toolbar`
+
+<ParamField path="action_factory" type="Callable" required>
+  A zero-argument callable that returns a `QAction`.
+</ParamField>
+
+<ParamField path="tooltip" type="str" required>
+  The tooltip text shown when hovering over the toolbar button.
+</ParamField>
+
+---
+
+### `show_dialog`
+
+```python
+def show_dialog(self, dialog_factory: Callable) -> Any
+```
+
+Shows a modal dialog and returns whatever the factory callable returns (typically a `QDialog` result code).
+
+Requires permission: `ui.dialog`
+
+<ParamField path="dialog_factory" type="Callable" required>
+  A zero-argument callable that constructs and shows a `QDialog`.
+</ParamField>
+
+---
+
+### `unregister_all`
+
+```python
+def unregister_all(self) -> None
+```
+
+Removes all UI slots registered by this plugin. Called automatically by `LifecycleManager` during `on_disable`, so you do not need to call it manually.
+
+---
+
+## EventsContext (`context.events`)
+
+`EventsContext` provides namespaced event publishing and subscribing. Emitting an event automatically prefixes it with `plugin.{plugin_id}.` to prevent name collisions with system events.
+
+### `subscribe`
+
+```python
+def subscribe(self, event: str, handler: Callable, priority: int = 0) -> None
+```
+
+Subscribes `handler` to `event`. Async handlers (coroutine functions) are detected automatically.
+
+Requires permission: `events.subscribe`
+
+<ParamField path="event" type="str" required>
+  The full event name to subscribe to. Use the `plugin.{id}.{name}` format for plugin events and the `core.*` namespace for system events.
+</ParamField>
+
+<ParamField path="handler" type="Callable" required>
+  A callable with signature `(event: str, payload: Any) -> None`. Async handlers are supported.
+</ParamField>
+
+<ParamField path="priority" type="int" default="0">
+  Dispatch priority. Higher numbers execute before lower numbers.
+</ParamField>
+
+---
+
+### `emit`
+
+```python
+def emit(self, event: str, payload: Any = None) -> None
+```
+
+Emits an event namespaced as `plugin.{plugin_id}.{event}`. Handlers are called synchronously in priority order; async handlers are dispatched to the configured event loop.
+
+Requires permission: `events.emit`
+
+<ParamField path="event" type="str" required>
+  The event name. The framework prepends `plugin.{id}.` automatically.
+</ParamField>
+
+<ParamField path="payload" type="Any" default="None">
+  Optional data to pass to all subscribers.
+</ParamField>
+
+---
+
+### `emit_global`
+
+```python
+def emit_global(self, event: str, payload: Any = None) -> None
+```
+
+Emits to a system-level event name without namespacing. Use this to broadcast to events outside the `plugin.*` namespace.
+
+Requires permission: `events.emit.global`
+
+<ParamField path="event" type="str" required>
+  The full system event name, e.g. `"core.user.login"`.
+</ParamField>
+
+<ParamField path="payload" type="Any" default="None">
+  Optional data to pass to all subscribers.
+</ParamField>
+
+---
+
+### `unsubscribe_all`
+
+```python
+def unsubscribe_all(self) -> None
+```
+
+Removes all event subscriptions registered by this plugin. Called automatically by `LifecycleManager` during `on_disable`.
+
+---
+
+## StorageContext (`context.storage`)
+
+`StorageContext` provides isolated, JSON-backed key-value persistence. Each plugin's data is stored under `{data_dir}/{plugin_id}/`. Plugins cannot access each other's storage.
+
+### `set`
+
+```python
+def set(self, key: str, value: Any) -> None
+```
+
+Persists `value` as JSON at `{plugin_dir}/{key}.json`. Also updates an in-memory cache.
+
+Requires permission: `storage.write`
+
+<ParamField path="key" type="str" required>
+  Storage key. Used as the filename (without extension).
+</ParamField>
+
+<ParamField path="value" type="Any" required>
+  Any JSON-serializable value.
+</ParamField>
+
+---
+
+### `get`
+
+```python
+def get(self, key: str, default: Any = None) -> Any
+```
+
+Returns the stored value for `key`. Checks the in-memory cache first, then reads from disk. Returns `default` if the key does not exist.
+
+Requires permission: `storage.read`
+
+<ParamField path="key" type="str" required>
+  The storage key to look up.
+</ParamField>
+
+<ParamField path="default" type="Any" default="None">
+  Value to return if the key is not found.
+</ParamField>
+
+---
+
+### `delete`
+
+```python
+def delete(self, key: str) -> None
+```
+
+Deletes the JSON file for `key` and evicts it from the cache. No-op if the key does not exist.
+
+Requires permission: `storage.write`
+
+<ParamField path="key" type="str" required>
+  The storage key to delete.
+</ParamField>
+
+---
+
+### `plugin_dir`
+
+```python
+@property
+def plugin_dir(self) -> Path
+```
+
+Read-only path to this plugin's data directory (`{data_dir}/{plugin_id}/`). Use this to construct paths for files the plugin manages directly, outside of the `set`/`get` API.
+
+---
+
+## ServicesContext (`context.services`)
+
+`ServicesContext` enables type-safe inter-plugin communication. Plugins expose interfaces to each other without sharing direct object references.
+
+### `get_service`
+
+```python
+def get_service(self, service_id: str) -> Any
+```
+
+Returns the interface registered under `service_id`. Only the published interface is returned, never the underlying implementation object.
+
+<ParamField path="service_id" type="str" required>
+  The unique service identifier, typically in reverse-domain format (e.g. `"com.vendor.my-service"`).
+</ParamField>
+
+Raises `KeyError` if no service with that ID has been registered.
+
+---
+
+### `register_service`
+
+```python
+def register_service(self, service_id: str, interface: Any) -> None
+```
+
+Publishes a service interface so other plugins can discover and call it via `get_service`.
+
+<ParamField path="service_id" type="str" required>
+  A unique identifier for this service.
+</ParamField>
+
+<ParamField path="interface" type="Any" required>
+  The object (typically a protocol instance or typed facade) to expose to other plugins.
+</ParamField>
+
+---
+
+## Usage example
+
+```python
+from core.skills.base import PluginBase
+
+
+class DataPlugin(PluginBase):
+
+    def on_load(self) -> None:
+        # Read persisted config
+        self._threshold = self.context.storage.get("threshold", default=0.5)
+        self.context.logger.info(f"Loaded threshold: {self._threshold}")
+
+    def on_enable(self) -> None:
+        super().on_enable()
+
+        # Subscribe to a core event
+        self.context.events.subscribe(
+            "core.analysis.complete",
+            self._on_analysis,
+            priority=10,
+        )
+
+        # Publish a service for other plugins
+        self.context.services.register_service(
+            "com.example.data-plugin",
+            self._public_interface,
+        )
+
+        # Register a sidebar widget
+        self.context.ui.register_sidebar(
+            widget_factory=self._build_panel,
+            title="Data",
+        )
+
+    def _on_analysis(self, event: str, payload) -> None:
+        self.context.storage.set("last_result", payload)
+        self.context.events.emit("result_saved", {"key": "last_result"})
+
+    def _build_panel(self):
+        from PySide6.QtWidgets import QLabel
+        return QLabel("Data Plugin Panel")
+
+    @property
+    def _public_interface(self):
+        return self  # Expose only public methods
+```

@@ -1,0 +1,59 @@
+---
+title: "Alice Assistant: build your first AI plugin today"
+description: "Alice is a Python desktop AI assistant framework. Build features as sandboxed plugins with a manifest, lifecycle hooks, and a typed context API."
+---
+
+Alice is built around a single principle: every feature is a plugin. There is no privileged core code that gets to bypass the same rules your plugins follow. Whether it's the chat panel, the settings screen, or a background service you write this afternoon — everything is discovered from the filesystem, validated against a manifest schema, permission-checked at runtime, and wired together through a shared event bus. If you can write a Python class, you can extend Alice.
+
+## What makes Alice different
+
+Most plugin systems bolt extensibility on top of an existing monolith. Alice inverts that: the runtime exists to host plugins, not the other way around.
+
+**Everything is a plugin.** Built-in features ship as plugins in the same `plugins/` directory your own code lands in. There is no internal API that bypasses the permission sandbox.
+
+**Manifest-driven loading.** Before a single line of plugin code runs, Alice reads and validates `manifest.json`. The ID, version, entrypoint, API compatibility range, and every permission the plugin may ever use must be declared upfront. Undeclared permission calls raise a `PermissionError` at runtime.
+
+**Permission sandbox.** The `PermissionGuard` checks every call to `self.context.ui`, `self.context.events`, `self.context.storage`, and friends against the permissions listed in the manifest. Some permissions — `shell.exec`, `fs.write`, `network.http` — are flagged as dangerous and surface a prompt to the user before they are granted.
+
+**Typed context API.** Plugins never import from the core directly. Alice injects a `PluginContext` object that exposes every service your plugin needs: `ui`, `events`, `storage`, `services`, and `logger`. The types are stable across minor API versions; Alice checks compatibility before loading.
+
+## Key concepts
+
+| Concept | What it is |
+|---|---|
+| `PluginBase` | Abstract base class every plugin extends. Defines the lifecycle contract. |
+| `PluginContext` | Injected object that gives plugins access to all framework services. |
+| `EventBus` | Decoupled publish-subscribe system. Plugins communicate without importing each other. |
+| `UIBridge` | Lets plugins register tabs, sidebars, toolbar actions, and dialogs in the main window. |
+| `manifest.json` | JSON file that declares the plugin's identity, permissions, and API compatibility. |
+
+## Explore the docs
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Write and load your first plugin in minutes.
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Understand how the runtime, event bus, and plugin manager fit together.
+  </Card>
+  <Card title="Creating a plugin" icon="hammer" href="/plugins/creating-a-plugin">
+    A full walkthrough from an empty directory to a working plugin.
+  </Card>
+  <Card title="Plugin system" icon="puzzle-piece" href="/concepts/plugin-system">
+    Deep dive into discovery, validation, loading, and lifecycle management.
+  </Card>
+</CardGroup>
+
+## How plugins work
+
+When Alice starts, `PluginManager` scans the `plugins/` directory for subdirectories that contain a `manifest.json`. It validates each manifest against a JSON schema, checks API version compatibility, resolves Python dependencies, then instantiates the plugin class named in `entrypoint`.
+
+From that point, Alice calls lifecycle hooks in order:
+
+1. `on_install` — runs once, the first time the plugin is ever loaded. Use it to set up storage or run migrations.
+2. `on_load` — runs on every startup while the plugin is enabled. Register commands and providers here. Must complete in under 500 ms.
+3. `on_enable` — called when the user activates the plugin. This is where you mount UI and subscribe to events.
+4. `on_disable` — called when the user deactivates the plugin. Alice automatically cleans up event listeners registered under your plugin ID.
+5. `on_unload` — called when Alice is closing or the plugin is being removed. Release external resources here.
+
+Plugins communicate through the `EventBus` using string event names. Core events like `core.plugin.enabled` are emitted by the runtime; your plugin's own events are automatically namespaced to `plugin.<your-id>.<event>` to prevent collisions.

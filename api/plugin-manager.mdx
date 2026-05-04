@@ -1,0 +1,272 @@
+---
+title: "PluginManager API: orchestrate plugin lifecycle"
+description: "PluginManager discovers, loads, enables, and disables plugins. It coordinates the registry, loader, lifecycle manager, sandbox, and dependency resolver."
+---
+
+`PluginManager` is the central orchestrator of Alice's plugin system. It owns the complete lifecycle of every plugin — from scanning the filesystem for manifests, through API compatibility checks and dependency resolution, to instantiation, loading, enabling, and disabling. It holds references to all live plugin instances and delegates error-isolated lifecycle calls to `LifecycleManager`.
+
+## Import
+
+```python
+from core.skills.manager import PluginManager
+```
+
+## Constructor
+
+```python
+def __init__(
+    self,
+    event_bus: EventBus,
+    ui_bridge: UIBridge,
+    data_dir: Path,
+) -> None
+```
+
+<ParamField path="event_bus" type="EventBus" required>
+  The shared `EventBus` instance. Passed into each plugin's `PluginContext` and used directly by `PluginManager` to emit lifecycle events.
+</ParamField>
+
+<ParamField path="ui_bridge" type="UIBridge" required>
+  The shared `UIBridge` instance. Passed into each plugin's `PluginContext` and used during `disable_plugin` to remove UI slots.
+</ParamField>
+
+<ParamField path="data_dir" type="Path" required>
+  Root directory for plugin data storage and the dependency resolver's package cache (`data_dir/cache/packages`).
+</ParamField>
+
+## Internal components
+
+`PluginManager` creates and owns the following subsystems during construction:
+
+| Component | Class | Responsibility |
+|---|---|---|
+| Registry | `PluginRegistry` | Tracks all discovered `PluginRecord` objects and their statuses |
+| Loader | `PluginLoader` | Imports plugin modules from the filesystem |
+| Guard | `PermissionGuard` | Enforces permission declarations from manifests |
+| Resolver | `DependencyResolver` | Installs and manages Python package dependencies |
+| Lifecycle | `LifecycleManager` | Calls lifecycle hooks with error isolation |
+| Manifest loader | `ManifestLoader` | Parses and validates `manifest.json` files |
+
+---
+
+## Methods
+
+### `discover`
+
+```python
+def discover(self) -> list[PluginRecord]
+```
+
+Scans the plugins directory for subdirectories that contain a `manifest.json` file. Parses each manifest, creates a `PluginRecord`, and registers it in the `PluginRegistry` with status `DISCOVERED`. Returns the list of newly registered records.
+
+Plugins that have an invalid or unparseable manifest are logged at `ERROR` level and skipped. They are not added to the registry.
+
+<Note>
+  `discover` does not load or import any plugin code. Call `load_all` or `load_plugin` after discovery to proceed to the loading phase.
+</Note>
+
+---
+
+### `load_all`
+
+```python
+def load_all(self) -> None
+```
+
+Loads all discovered plugins in topological dependency order (plugins with no dependencies first, dependents last). Calls `load_plugin` for each record in the registry.
+
+---
+
+### `load_plugin`
+
+```python
+def load_plugin(self, plugin_id: str) -> bool
+```
+
+Runs the full loading pipeline for a single plugin. Returns `True` on success, `False` on any failure.
+
+<ParamField path="plugin_id" type="str" required>
+  The plugin identifier, as declared in its `manifest.json`.
+</ParamField>
+
+The pipeline executes these steps in order:
+
+<Steps>
+  <Step title="API compatibility check">
+    Compares the plugin's declared `api_compatibility.min` and `api_compatibility.max` against `CURRENT_API_VERSION`. Sets status `INCOMPATIBLE` and returns `False` on mismatch.
+  </Step>
+  <Step title="Dependency resolution">
+    Calls `DependencyResolver.ensure_dependencies` to install any required Python packages declared under `dependencies.python` in the manifest. Sets status `ERROR` and returns `False` on failure.
+  </Step>
+  <Step title="Permission registration">
+    Registers the plugin's declared `permissions` list with `PermissionGuard`.
+  </Step>
+  <Step title="Module import">
+    Uses `PluginLoader` to import the plugin's entrypoint module and retrieve the plugin class. Records `load_time_ms` on the `PluginRecord`. Sets status `ERROR` and returns `False` on import failure.
+  </Step>
+  <Step title="Context creation and instantiation">
+    Creates a `PluginContext` for the plugin and instantiates the plugin class with it. Sets status `ERROR` and returns `False` if the constructor raises.
+  </Step>
+  <Step title="on_load">
+    Calls `on_load()` via `LifecycleManager` (inside a `plugin_guard`). Sets status `LOADED` on success. Returns `False` if `on_load` raises.
+  </Step>
+</Steps>
+
+---
+
+### `enable_plugin`
+
+```python
+def enable_plugin(self, plugin_id: str) -> bool
+```
+
+Calls `on_enable()` on the plugin instance via `LifecycleManager`. On success, sets status `ENABLED` and emits the `core.plugin.enabled` event with payload `{"plugin_id": plugin_id}`. Returns `True` on success, `False` on failure.
+
+<ParamField path="plugin_id" type="str" required>
+  The plugin to enable. Must be in `LOADED` or `DISABLED` status.
+</ParamField>
+
+If `on_enable` raises, `LifecycleManager` attempts a rollback by calling `on_disable` to clean up any partially mounted state, then marks the plugin as disabled.
+
+---
+
+### `disable_plugin`
+
+```python
+def disable_plugin(self, plugin_id: str) -> None
+```
+
+Calls `on_disable()` via `LifecycleManager`, then unconditionally removes all UI slots (`context.ui.unregister_all`) and event subscriptions (`context.events.unsubscribe_all`) registered by the plugin. Sets status `DISABLED` and emits `core.plugin.disabled` with payload `{"plugin_id": plugin_id}`.
+
+<ParamField path="plugin_id" type="str" required>
+  The plugin to disable.
+</ParamField>
+
+<Note>
+  UI and event cleanup always runs after `on_disable`, even if `on_disable` itself raised an exception. This prevents orphaned widgets or dangling event handlers.
+</Note>
+
+---
+
+### `get_instance`
+
+```python
+def get_instance(self, plugin_id: str) -> PluginBase | None
+```
+
+Returns the live `PluginBase` instance for `plugin_id`, or `None` if the plugin has not been successfully loaded.
+
+<ParamField path="plugin_id" type="str" required>
+  The plugin identifier to look up.
+</ParamField>
+
+---
+
+### `get_registry`
+
+```python
+def get_registry(self) -> PluginRegistry
+```
+
+Returns the `PluginRegistry`, which can be queried to inspect the status, metadata, and error messages of all discovered plugins. Useful for building settings UIs or a marketplace panel.
+
+---
+
+## PluginRecord fields
+
+`PluginRecord` is a dataclass returned by `discover` and stored in the registry. Fields:
+
+<ResponseField name="id" type="str" required>
+  Unique plugin identifier from `manifest.json`.
+</ResponseField>
+
+<ResponseField name="name" type="str" required>
+  Human-readable plugin name.
+</ResponseField>
+
+<ResponseField name="version" type="str" required>
+  Plugin version string (e.g. `"1.2.0"`).
+</ResponseField>
+
+<ResponseField name="description" type="str" required>
+  Short description of the plugin.
+</ResponseField>
+
+<ResponseField name="author" type="str" required>
+  Author name from `manifest.author.name`.
+</ResponseField>
+
+<ResponseField name="status" type="PluginStatus" required>
+  Current lifecycle status (see below).
+</ResponseField>
+
+<ResponseField name="error_message" type="str">
+  Non-empty string describing the failure when `status` is `ERROR` or `INCOMPATIBLE`.
+</ResponseField>
+
+<ResponseField name="load_time_ms" type="float">
+  Time in milliseconds taken to import the plugin module. Set during `load_plugin`.
+</ResponseField>
+
+---
+
+## PluginStatus enum
+
+```python
+class PluginStatus(str, Enum):
+    DISCOVERED   = "discovered"    # manifest read, module not yet imported
+    LOADED       = "loaded"        # module imported, on_load succeeded
+    ENABLED      = "enabled"       # on_enable executed, UI mounted
+    DISABLED     = "disabled"      # on_disable executed
+    ERROR        = "error"         # failed in some phase
+    INCOMPATIBLE = "incompatible"  # API version mismatch
+```
+
+---
+
+## System events
+
+`PluginManager` emits the following events on the shared `EventBus`:
+
+| Event | Payload | When |
+|---|---|---|
+| `core.plugin.enabled` | `{"plugin_id": str}` | After `on_enable` succeeds |
+| `core.plugin.disabled` | `{"plugin_id": str}` | After `on_disable` and cleanup complete |
+
+---
+
+## Usage example
+
+```python
+from pathlib import Path
+from core.events.bus import EventBus
+from core.ui.bridge import UIBridge
+from core.skills.manager import PluginManager
+
+# Application startup
+bus = EventBus()
+bridge = UIBridge(main_window)
+manager = PluginManager(bus, bridge, data_dir=Path("~/.alice/data").expanduser())
+
+# Discover and load all plugins
+records = manager.discover()
+manager.load_all()
+
+# Enable a specific plugin
+success = manager.enable_plugin("com.example.greeter")
+if not success:
+    record = manager.get_registry().get("com.example.greeter")
+    print(f"Enable failed: {record.error_message}")
+
+# Inspect all plugins
+for record in manager.get_registry().all():
+    print(f"{record.id} ({record.version}) — {record.status.value}")
+
+# Disable a plugin
+manager.disable_plugin("com.example.greeter")
+
+# Access the live instance directly
+instance = manager.get_instance("com.example.greeter")
+if instance:
+    print(f"Plugin enabled: {instance.is_enabled}")
+```

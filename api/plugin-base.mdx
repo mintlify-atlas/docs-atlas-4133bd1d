@@ -1,0 +1,183 @@
+---
+title: "PluginBase: abstract base class for all plugins"
+description: "PluginBase is the abstract class every Alice plugin must extend. It defines six lifecycle hooks, exposes the PluginContext, and manages enabled state."
+---
+
+Every Alice plugin must extend `PluginBase`. It defines the six lifecycle hooks the framework calls at well-defined moments, holds the injected `PluginContext`, and tracks the enabled state of the plugin. Only `on_load` is abstract and required — the remaining five hooks are no-ops by default and can be overridden as needed.
+
+## Import
+
+```python
+from core.skills.base import PluginBase
+```
+
+## Class signature
+
+```python
+class PluginBase(ABC):
+    def __init__(self, context: PluginContext) -> None: ...
+```
+
+## Constructor
+
+<ParamField path="context" type="PluginContext" required>
+  The `PluginContext` instance created and injected by `PluginManager` during loading. Provides access to UI, events, storage, and inter-plugin services.
+</ParamField>
+
+## Properties
+
+<ResponseField name="context" type="PluginContext" required>
+  The injected plugin context. Use `self.context.*` to access all framework services. Never store references to `app` or `main_window` directly.
+</ResponseField>
+
+<ResponseField name="is_enabled" type="bool" required>
+  Whether the plugin is currently enabled. Set to `True` by the default `on_enable` implementation and `False` by `on_disable`. Read-only from outside the plugin.
+</ResponseField>
+
+## Lifecycle methods
+
+The six lifecycle hooks are called by `LifecycleManager` in a defined order. Each runs inside a `plugin_guard` context that catches exceptions, logs them with a full traceback, and prevents a single plugin crash from affecting other plugins or the core.
+
+### `on_install`
+
+```python
+def on_install(self) -> None
+```
+
+Called exactly once the first time the plugin is installed. Use this hook to create database tables, initialize storage keys, or run first-time data migrations.
+
+This hook is **optional**. The base class provides a no-op implementation.
+
+---
+
+### `on_load`
+
+```python
+@abstractmethod
+def on_load(self) -> None
+```
+
+Called on every application startup when the plugin is in an enabled state. Register commands, shortcuts, and service providers here. Do not mount UI components in this hook — defer that to `on_enable`.
+
+This hook is **required** (abstract). Every plugin must implement it.
+
+<Warning>
+  `on_load` must complete in under 500 ms. Long-running I/O, network calls, or heavy computation will delay application startup and may cause the plugin to be disabled with an error status.
+</Warning>
+
+---
+
+### `on_enable`
+
+```python
+def on_enable(self) -> None
+```
+
+Called when the user enables the plugin. Mount UI components (tabs, sidebars, toolbar actions) and subscribe to events here. The default implementation sets `self._enabled = True`.
+
+This hook is **optional**.
+
+---
+
+### `on_disable`
+
+```python
+def on_disable(self) -> None
+```
+
+Called when the user disables the plugin. Unmount everything registered in `on_enable`. The `EventBus` and `UIBridge` are also cleaned up automatically by `LifecycleManager` after this hook returns, so manual cleanup is not required for events or UI slots registered via `context.events` and `context.ui`. The default implementation sets `self._enabled = False`.
+
+This hook is **optional**.
+
+---
+
+### `on_unload`
+
+```python
+def on_unload(self) -> None
+```
+
+Called when the application is closing or the plugin is being removed entirely. Save persistent state, release external connections, and stop background threads here.
+
+This hook is **optional**.
+
+---
+
+### `on_update`
+
+```python
+def on_update(self, old_version: str, new_version: str) -> None
+```
+
+<ParamField path="old_version" type="str" required>
+  The version string of the plugin before the update (e.g. `"1.2.0"`).
+</ParamField>
+
+<ParamField path="new_version" type="str" required>
+  The version string of the plugin after the update (e.g. `"1.3.0"`).
+</ParamField>
+
+Called when the plugin is updated from one version to another. Run data migrations and schema changes here.
+
+This hook is **optional**.
+
+---
+
+## Usage example
+
+```python
+from core.skills.base import PluginBase
+from core.skills.context import PluginContext
+
+
+class GreeterPlugin(PluginBase):
+    """A minimal plugin that logs a greeting on load and mounts a sidebar tab."""
+
+    def on_load(self) -> None:
+        self.context.logger.info("GreeterPlugin loaded")
+
+    def on_enable(self) -> None:
+        super().on_enable()
+        self._slot = self.context.ui.register_sidebar(
+            widget_factory=self._build_widget,
+            title="Greeter",
+            icon="hand-wave",
+        )
+        self.context.events.subscribe("core.user.login", self._handle_login)
+
+    def on_disable(self) -> None:
+        super().on_disable()
+        # UI slots and event subscriptions are cleaned up automatically,
+        # but you can also do explicit teardown here if needed.
+
+    def on_unload(self) -> None:
+        self.context.logger.info("GreeterPlugin unloaded")
+
+    def on_update(self, old_version: str, new_version: str) -> None:
+        self.context.logger.info(f"Migrating from {old_version} to {new_version}")
+
+    def _build_widget(self):
+        from PySide6.QtWidgets import QLabel
+        return QLabel("Hello from GreeterPlugin!")
+
+    def _handle_login(self, event: str, payload) -> None:
+        self.context.logger.info(f"User logged in: {payload}")
+```
+
+## Rules
+
+<Warning>
+  Never catch exceptions raised by the core without re-raising them. Swallowing core exceptions can leave the application in an inconsistent state and makes debugging very difficult.
+</Warning>
+
+<Warning>
+  Never store a reference to the `app` object or `main_window`. These objects may be recreated during the application lifecycle. Use `self.context.*` to access all services instead.
+</Warning>
+
+<Note>
+  Always access framework services through `self.context.*`. Direct imports from `core.*` bypass permission checks and break the plugin sandbox.
+</Note>
+
+<Note>
+  `on_load` must complete in under 500 ms. Defer expensive initialization to `on_enable` or to a background thread started after load.
+</Note>

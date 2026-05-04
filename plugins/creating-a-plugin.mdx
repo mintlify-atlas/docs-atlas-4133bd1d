@@ -1,0 +1,164 @@
+---
+title: "Create your first Alice plugin from scratch"
+description: "Walk through creating a complete Alice plugin: directory structure, manifest.json, PluginBase subclass, and registering UI and event handlers."
+---
+
+Every Alice plugin is a self-contained directory that Alice discovers, validates, and loads at startup. A plugin declares its identity and requirements in a `manifest.json` file and implements behaviour by subclassing `PluginBase`. This guide walks you through building a working counter plugin end-to-end.
+
+## Directory structure
+
+Place your plugin folder inside Alice's `plugins/` directory. The folder name must match the `id` field in your manifest exactly.
+
+```
+plugins/
+  com.example.counter/
+    manifest.json
+    plugin.py
+    assets/          # optional icons, images, etc.
+    wheels/          # optional pre-bundled Python packages
+```
+
+<Steps>
+  <Step title="Create the plugin directory">
+    Use reverse-domain notation for the plugin ID — this guarantees uniqueness across plugins from different authors.
+
+    ```bash
+    mkdir -p plugins/com.yourname.pluginname
+    ```
+
+    The directory name becomes the plugin's identifier throughout Alice. It must match the `id` field in `manifest.json` exactly.
+  </Step>
+
+  <Step title="Write manifest.json">
+    Every plugin requires a `manifest.json` at the root of its directory. The file declares the plugin's identity, entrypoint, required permissions, and API compatibility range.
+
+    ```json
+    {
+      "schema_version": "1",
+      "id": "com.example.counter",
+      "name": "Counter",
+      "version": "1.0.0",
+      "description": "A simple click counter demonstrating the Alice plugin API.",
+      "author": { "name": "Your Name" },
+      "entrypoint": "plugin:CounterPlugin",
+      "permissions": [
+        "ui.tab",
+        "storage.read",
+        "storage.write"
+      ],
+      "api_compatibility": {
+        "min": "1.0.0",
+        "max": "1.x"
+      }
+    }
+    ```
+
+    The `entrypoint` value `"plugin:CounterPlugin"` tells Alice to load the file `plugin.py` and instantiate the class `CounterPlugin`.
+  </Step>
+
+  <Step title="Create plugin.py extending PluginBase">
+    Create `plugin.py` in the plugin directory and import `PluginBase` from the core skills module.
+
+    ```python
+    from core.skills.base import PluginBase
+
+    class CounterPlugin(PluginBase):
+        pass
+    ```
+
+    `PluginBase` is abstract — Alice will refuse to load a plugin that does not implement `on_load`.
+  </Step>
+
+  <Step title="Implement on_load and on_enable">
+    `on_load` runs every time Alice starts. Use it to register resources and restore persisted state. `on_enable` runs when the user activates the plugin — mount UI and subscribe to events here.
+
+    ```python
+    def on_load(self):
+        self.context.logger.info("Counter plugin loaded")
+        self._count = self.context.storage.get("count", 0)
+
+    def on_enable(self):
+        self.context.ui.register_tab(self.get_main_widget, title="Counter")
+    ```
+
+    Never mount UI inside `on_load` — the main window may not exist yet at that point.
+  </Step>
+
+  <Step title="Implement get_main_widget()">
+    Plugins that register a tab or appear in the plugin view must implement `get_main_widget()`. Alice calls this factory function to create the widget; return a fresh `QWidget` each time.
+
+    ```python
+    from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton
+
+    def get_main_widget(self):
+        widget = QWidget()
+        layout = QVBoxLayout()
+        self._label = QLabel(f"Count: {self._count}")
+        btn = QPushButton("Increment")
+        btn.clicked.connect(self._increment)
+        layout.addWidget(self._label)
+        layout.addWidget(btn)
+        widget.setLayout(layout)
+        return widget
+
+    def _increment(self):
+        self._count += 1
+        self._label.setText(f"Count: {self._count}")
+    ```
+  </Step>
+
+  <Step title="Test the plugin">
+    Place the plugin folder in Alice's `plugins/` directory and launch Alice. Open the Plugin Manager to enable your plugin. The Counter tab should appear in the central tab widget.
+
+    ```bash
+    # Place folder and run Alice from source
+    cp -r com.example.counter /path/to/alice/plugins/
+    python src/main/python/main.py
+    ```
+
+    Check the application log for `INFO plugin.com.example.counter — Counter plugin loaded` to confirm the plugin was discovered and loaded without errors.
+  </Step>
+</Steps>
+
+## Full working example
+
+The complete `plugin.py` for the counter plugin:
+
+```python
+from core.skills.base import PluginBase
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton
+
+class CounterPlugin(PluginBase):
+    def on_load(self):
+        self.context.logger.info("Counter plugin loaded")
+        self._count = self.context.storage.get("count", 0)
+
+    def on_enable(self):
+        self.context.ui.register_tab(self.get_main_widget, title="Counter")
+
+    def on_disable(self):
+        self.context.storage.set("count", self._count)
+
+    def get_main_widget(self):
+        widget = QWidget()
+        layout = QVBoxLayout()
+        self._label = QLabel(f"Count: {self._count}")
+        btn = QPushButton("Increment")
+        btn.clicked.connect(self._increment)
+        layout.addWidget(self._label)
+        layout.addWidget(btn)
+        widget.setLayout(layout)
+        return widget
+
+    def _increment(self):
+        self._count += 1
+        self._label.setText(f"Count: {self._count}")
+```
+
+<Note>
+  Save mutable state in `on_disable` and restore it in `on_load` via `context.storage`. Alice calls `on_disable` before the app closes, giving you a reliable opportunity to persist data. Never rely on `__del__` or `atexit` for this — they are not guaranteed to run.
+</Note>
+
+<Tip>
+  Use reverse-domain notation for plugin IDs: `com.yourname.pluginname`. Keep all segments lowercase, using only alphanumeric characters and hyphens. This matches the pattern enforced by the manifest schema: `^[a-z0-9]+(\.[a-z0-9\-]+)+$`.
+</Tip>
